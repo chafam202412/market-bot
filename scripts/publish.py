@@ -1,4 +1,4 @@
-"""스냅샷 -> Gemini 리포트 -> Blogger 발행 -> 텔레그램 알림."""
+"""스냅샷 -> Gemini 리포트 -> 서식/차트 -> Blogger 발행 -> 텔레그램 알림."""
 import datetime as dt
 import html as htmllib
 import json
@@ -34,6 +34,7 @@ COMMON = """당신은 한국어 금융 블로그의 필자다.
 {"title": "...", "html": "...", "summary3": ["...", "...", "..."], "labels": ["..."]}
 
 html 본문은 <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다.
+style 속성이나 색상은 넣지 않는다. 서식은 나중에 자동으로 입혀진다.
 summary3은 텔레그램용 3줄 요약이며 각 45자 내외."""
 
 MARKET_BODY = """
@@ -58,7 +59,7 @@ MARKET_BODY = """
 MARKET_SYSTEM = COMMON + "\n\n새벽 미국시장 데이터를 받아 아침 리뷰를 쓴다. 아래 세 부분으로만 구성한다." \
     + MARKET_BODY.format(heading="시장을 지배한 핵심 이슈 3가지")
 
-RECAP_SYSTEM = COMMON + "\n\n미국장 휴장일이다. 가장 최근 거래일 데이터를 바탕으로 주간 정리를 쓴다." \
+RECAP_SYSTEM = COMMON + "\n\n미국장 휴장일이다. 가장 최근 거래일 데이터로 정리를 쓴다." \
     + MARKET_BODY.format(heading="지난 거래일 시장을 움직인 3가지")
 
 NEWS_SYSTEM = COMMON + """
@@ -79,6 +80,64 @@ NEWS_SYSTEM = COMMON + """
 [2] <h2>이번 주 주요 일정</h2> <ul><li>날짜 - 일정명 - 왜 중요한지</li></ul>
     검색으로 확인된 것만. 없으면 <p>확인된 주요 일정이 없습니다.</p>"""
 
+# ---------- 서식 ----------
+TABLE = 'style="width:100%;border-collapse:collapse;font-size:15px;margin:18px 0 8px;"'
+HEAD_TD = 'style="background:#f1f5f9;font-weight:700;padding:10px 8px;border-bottom:2px solid #cbd5e1;text-align:left;"'
+TD = 'style="padding:9px 8px;border-bottom:1px solid #e5e7eb;"'
+H2 = 'style="font-size:20px;font-weight:700;margin:36px 0 14px;padding-bottom:8px;border-bottom:2px solid #334155;"'
+H3 = 'style="font-size:17px;font-weight:700;margin:28px 0 12px;padding:8px 0 8px 12px;border-left:4px solid #2563eb;background:#f8fafc;"'
+PP = 'style="line-height:1.8;margin:10px 0;"'
+UL = 'style="line-height:1.85;margin:8px 0 18px;padding-left:24px;"'
+LI = 'style="margin:7px 0;"'
+IMG = 'style="width:100%;height:auto;margin:6px 0;border:1px solid #e5e7eb;border-radius:8px;"'
+CAP = 'style="font-size:13px;color:#6b7280;text-align:center;margin:4px 0 22px;"'
+LABEL = 'style="font-weight:700;color:#0f172a;border-bottom:2px solid #fcd34d;padding-bottom:1px;"'
+
+
+def style_html(html: str) -> str:
+    def color(m):
+        v = m.group(0)
+        c = "#d32f2f" if v.startswith("+") else "#1565c0"
+        return f'<span style="color:{c};font-weight:600;">{v}</span>'
+
+    html = re.sub(r"[+\-−]\d+(?:[.,]\d+)?\s*(?:%p|%|bp)", color, html)
+    html = re.sub(r"(\d\)\s*(?:현황|원인|해석))",
+                  lambda m: f'<span {LABEL}>{m.group(1)}</span>', html)
+
+    def table(m):
+        t = m.group(0)
+        for i, r in enumerate(re.findall(r"(?is)<tr[^>]*>.*?</tr>", t)):
+            style = HEAD_TD if i == 0 else TD
+            t = t.replace(r, re.sub(r"(?i)<(td|th)[^>]*>", f"<\\1 {style}>", r), 1)
+        return re.sub(r"(?i)^<table[^>]*>", f"<table {TABLE}>", t)
+
+    html = re.sub(r"(?is)<table.*?</table>", table, html)
+    html = re.sub(r"(?i)<h2[^>]*>", f"<h2 {H2}>", html)
+    html = re.sub(r"(?i)<h3[^>]*>", f"<h3 {H3}>", html)
+    html = re.sub(r"(?i)<p[^>]*>", f"<p {PP}>", html)
+    html = re.sub(r"(?i)<ul[^>]*>", f"<ul {UL}>", html)
+    html = re.sub(r"(?i)<li[^>]*>", f"<li {LI}>", html)
+    return html
+
+
+def insert_charts(html: str, stem: str) -> str:
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    base = f"https://raw.githubusercontent.com/{repo}/main/charts/"
+
+    intra = Path("charts") / f"{stem}-intraday.png"
+    sect = Path("charts") / f"{stem}-sector.png"
+
+    if intra.exists() and repo:
+        block = (f'<img src="{base}{intra.name}" {IMG}>'
+                 f'<p {CAP}>새벽 00:00~06:30(KST) 30분 간격 지수 흐름</p>')
+        html = html.replace("</table>", "</table>" + block, 1) if "</table>" in html else block + html
+    if sect.exists() and repo:
+        block = (f'<img src="{base}{sect.name}" {IMG}>'
+                 f'<p {CAP}>섹터별 등락률</p>')
+        idx = html.rfind("<h2")
+        html = (html[:idx] + block + html[idx:]) if idx != -1 else html + block
+    return html
+
 
 def http_json(url, body=None, timeout=300, headers=None, raw=None):
     data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
@@ -97,20 +156,16 @@ def http_json(url, body=None, timeout=300, headers=None, raw=None):
         raise
 
 
-# ---------- Gemini ----------
-
 def list_models(key):
     for ver in ("v1beta", "v1"):
         try:
             res = http_json(f"{HOST}/{ver}/models?key={key}", timeout=30)
         except urllib.error.HTTPError:
             continue
-        names = [
-            m["name"] for m in res.get("models", [])
-            if "generateContent" in m.get("supportedGenerationMethods", [])
-            and not any(x in m["name"] for x in
-                        ("image", "tts", "embedding", "vision", "live", "omni"))
-        ]
+        names = [m["name"] for m in res.get("models", [])
+                 if "generateContent" in m.get("supportedGenerationMethods", [])
+                 and not any(x in m["name"] for x in
+                             ("image", "tts", "embedding", "vision", "live", "omni"))]
         if names:
             return ver, names
     raise SystemExit("모델 목록을 가져오지 못했습니다.")
@@ -138,11 +193,9 @@ def extract_json(text):
 
 
 def call(key, ver, name, system, prompt, with_search):
-    body = {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 32768},
-    }
+    body = {"systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 32768}}
     if with_search:
         body["tools"] = [{"google_search": {}}]
     else:
@@ -153,17 +206,16 @@ def call(key, ver, name, system, prompt, with_search):
     return extract_json(text)
 
 
-def try_generate(key, ver, candidates, system, prompt, with_search, retry_429=True):
-    """성공하면 (report, 사용모델), 실패하면 (None, None)."""
+def try_generate(key, ver, candidates, system, prompt, with_search):
     tag = "검색O" if with_search else "검색X"
     for i, name in enumerate(candidates[:4]):
         if i:
-            time.sleep(3)  # 분당 한도 보호
+            time.sleep(3)
         try:
             return call(key, ver, name, system, prompt, with_search), name
         except urllib.error.HTTPError as e:
-            if e.code == 429 and retry_429 and i == 0:
-                print("   분당 한도로 보임 -> 65초 대기 후 1회 재시도")
+            if e.code == 429 and i == 0:
+                print("   분당 한도로 보임 -> 65초 대기 후 재시도")
                 time.sleep(65)
                 try:
                     return call(key, ver, name, system, prompt, with_search), name
@@ -175,14 +227,12 @@ def try_generate(key, ver, candidates, system, prompt, with_search, retry_429=Tr
     return None, None
 
 
-# ---------- 데이터 ----------
-
 def load_snapshots(date_kst):
     path = Path("snapshots") / f"{date_kst:%Y-%m-%d}.jsonl"
     if not path.exists():
         files = sorted(Path("snapshots").glob("*.jsonl"))
         if not files:
-            return []
+            return [], ""
         path = files[-1]
     snaps = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     for rec in snaps:
@@ -190,21 +240,17 @@ def load_snapshots(date_kst):
             if k in YIELD_KEYS and v.get("last") is not None and v.get("prev_close"):
                 v["chg_bp"] = round((v["last"] - v["prev_close"]) * 100, 1)
                 v.pop("chg_pct", None)
-    return snaps
+    return snaps, path.stem
 
-
-# ---------- Blogger ----------
 
 def blogger_token():
     data = urllib.parse.urlencode({
         "client_id": os.environ["BLOGGER_CLIENT_ID"],
         "client_secret": os.environ["BLOGGER_CLIENT_SECRET"],
         "refresh_token": os.environ["BLOGGER_REFRESH_TOKEN"],
-        "grant_type": "refresh_token",
-    }).encode()
-    res = http_json("https://oauth2.googleapis.com/token", raw=data, timeout=30,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"})
-    return res["access_token"]
+        "grant_type": "refresh_token"}).encode()
+    return http_json("https://oauth2.googleapis.com/token", raw=data, timeout=30,
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})["access_token"]
 
 
 def post_to_blogger(title, body_html, labels):
@@ -213,80 +259,69 @@ def post_to_blogger(title, body_html, labels):
     url = f"https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts/"
     if DRAFT:
         url += "?isDraft=true"
-    payload = {"kind": "blogger#post", "title": title,
-               "content": body_html, "labels": labels[:5]}
-    res = http_json(url, payload, timeout=60,
-                    headers={"Authorization": f"Bearer {token}"})
+    res = http_json(url, {"kind": "blogger#post", "title": title,
+                          "content": body_html, "labels": labels[:5]},
+                    timeout=60, headers={"Authorization": f"Bearer {token}"})
     return res.get("url") or f"https://www.blogger.com/blog/posts/{blog_id}"
 
 
 def send_telegram(text):
     data = urllib.parse.urlencode({
-        "chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text, "parse_mode": "HTML"
-    }).encode()
+        "chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text,
+        "parse_mode": "HTML"}).encode()
     req = urllib.request.Request(
-        f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
-        data=data)
+        f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage", data=data)
     with urllib.request.urlopen(req, timeout=30) as r:
         r.read()
 
 
-# ---------- 본문 ----------
-
 def main():
     key = os.environ["GEMINI_API_KEY"]
     now_kst = dt.datetime.now(dt.timezone.utc).astimezone(KST)
-    snaps = load_snapshots(now_kst.date())
+    snaps, stem = load_snapshots(now_kst.date())
 
     market = now_kst.weekday() in (1, 2, 3, 4, 5) and len(snaps) >= 4
     print(f"[mode] {'시장리뷰' if market else '뉴스'} / 스냅샷 {len(snaps)}건 / 초안={DRAFT}")
 
     ver, names = list_models(key)
     cands = rank(names)
-    print(f"[api] {ver} / {', '.join(n.split('/')[-1] for n in cands[:4])}")
 
-    data_prompt = (
-        f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
-        f"[스냅샷 {len(snaps)}건] 금리 항목의 chg_bp는 bp 단위 변동이다.\n"
-        + json.dumps(snaps, ensure_ascii=False)
-        + "\n\n마지막 스냅샷이 사실상 종가다."
-    )
+    data_prompt = (f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
+                   f"[스냅샷 {len(snaps)}건] 금리 항목의 chg_bp는 bp 단위 변동이다.\n"
+                   + json.dumps(snaps, ensure_ascii=False)
+                   + "\n\n마지막 스냅샷이 사실상 종가다.")
 
     if market:
-        # 검색 되면 좋고, 안 되면 데이터만으로 작성
         report, used = try_generate(key, ver, cands, MARKET_SYSTEM, data_prompt, True)
         if report is None:
             report, used = try_generate(key, ver, cands, MARKET_SYSTEM, data_prompt, False)
         mode = "시장리뷰"
     else:
-        news_prompt = (
-            f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
-            "미국장 휴장 구간이므로 지난 24~48시간의 주요 금융·경제 뉴스를 검색해 정리하라."
-        )
+        news_prompt = (f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
+                       "미국장 휴장 구간이므로 지난 24~48시간의 주요 금융·경제 뉴스를 검색해 정리하라.")
         report, used = try_generate(key, ver, cands, NEWS_SYSTEM, news_prompt, True)
         mode = "뉴스"
         if report is None:
-            # 검색이 막히면 뉴스를 지어내는 대신 데이터 기반 주간 정리로 전환
-            print("[fallback] 검색 불가 -> 데이터 기반 주간 정리로 전환")
+            print("[fallback] 검색 불가 -> 데이터 기반 정리로 전환")
             report, used = try_generate(key, ver, cands, RECAP_SYSTEM, data_prompt, False)
             mode = "주간정리"
 
     if report is None:
         send_telegram("⚠️ 오늘 리포트 생성 실패 (API 한도 초과로 보임). 발행을 건너뜁니다.")
-        print("생성 실패 - 발행 건너뜀")
         return
 
     print(f"[model] {used} / [mode] {mode}")
-    labels = (report.get("labels") or []) + [mode]
-    url = post_to_blogger(report["title"], report["html"], labels)
+    body = style_html(report["html"])
+    if mode != "뉴스":
+        body = insert_charts(body, stem)
+
+    url = post_to_blogger(report["title"], body, (report.get("labels") or []) + [mode])
     print(f"[blogger] {url}")
 
     prefix = "[초안] " if DRAFT else ""
-    send_telegram(
-        f"{prefix}<b>{htmllib.escape(report['title'])}</b>\n\n"
-        + "\n".join(f"▸ {htmllib.escape(s)}" for s in report["summary3"])
-        + f"\n\n{url}"
-    )
+    send_telegram(f"{prefix}<b>{htmllib.escape(report['title'])}</b>\n\n"
+                  + "\n".join(f"▸ {htmllib.escape(s)}" for s in report["summary3"])
+                  + f"\n\n{url}")
     print("[telegram] 전송 완료")
 
 
