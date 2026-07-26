@@ -4,6 +4,7 @@ import html as htmllib
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,14 +36,11 @@ COMMON = """당신은 한국어 금융 블로그의 필자다.
 html 본문은 <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다.
 summary3은 텔레그램용 3줄 요약이며 각 45자 내외."""
 
-MARKET_SYSTEM = COMMON + """
-
-새벽 미국시장 데이터를 받아 아침 리뷰를 쓴다. 아래 세 부분으로만 구성한다.
-
+MARKET_BODY = """
 [1] 맨 위 주요 지표 <table>. 첫 행은 머리글(지표/종가/등락).
     주가지수는 %, 금리는 bp, 환율·유가·금은 % 로 표기.
 
-[2] <h2>시장을 지배한 핵심 이슈 3가지</h2>
+[2] <h2>{heading}</h2>
     <h3>1. [주식] 이슈 제목</h3>
     <p>1) 현황: 한두 문장</p>
     <p>2) 원인</p>
@@ -51,11 +49,17 @@ MARKET_SYSTEM = COMMON + """
     <ul><li>...</li><li>...</li></ul>
 
     <h3>2. [채권] 이슈 제목</h3>   (같은 형식)
-    <h3>3. [기타] 이슈 제목</h3>   (환율·원자재·가상자산 중 그날 움직임이 가장 큰 것)
+    <h3>3. [기타] 이슈 제목</h3>   (환율·원자재·가상자산 중 움직임이 가장 큰 것)
 
-[3] <h2>향후 주요 일정</h2> <ul><li>날짜 - 일정명 - 왜 중요한지</li></ul>
-    검색으로 확인된 실제 일정만 쓴다. 확인하지 못했으면 목록 대신
-    <p>확인된 주요 일정이 없습니다.</p> 로 대체한다."""
+[3] <h2>향후 주요 일정</h2>
+    검색이 가능하면 <ul><li>날짜 - 일정명 - 왜 중요한지</li></ul> 로 실제 일정만 쓴다.
+    확인하지 못했으면 <p>확인된 주요 일정이 없습니다.</p> 로 대체한다. 날짜를 추측하지 않는다."""
+
+MARKET_SYSTEM = COMMON + "\n\n새벽 미국시장 데이터를 받아 아침 리뷰를 쓴다. 아래 세 부분으로만 구성한다." \
+    + MARKET_BODY.format(heading="시장을 지배한 핵심 이슈 3가지")
+
+RECAP_SYSTEM = COMMON + "\n\n미국장 휴장일이다. 가장 최근 거래일 데이터를 바탕으로 주간 정리를 쓴다." \
+    + MARKET_BODY.format(heading="지난 거래일 시장을 움직인 3가지")
 
 NEWS_SYSTEM = COMMON + """
 
@@ -70,17 +74,13 @@ NEWS_SYSTEM = COMMON + """
     <p>3) 해석</p>
     <ul><li>...</li><li>...</li></ul>
 
-    분야는 통화정책·경제지표·기업·지정학·원자재 등 그 주에 실제로 중요했던 것으로 고른다.
+    분야는 통화정책·경제지표·기업·지정학·원자재 중 그 주에 실제로 중요했던 것으로 고른다.
 
 [2] <h2>이번 주 주요 일정</h2> <ul><li>날짜 - 일정명 - 왜 중요한지</li></ul>
     검색으로 확인된 것만. 없으면 <p>확인된 주요 일정이 없습니다.</p>"""
 
-B, BE = "\x01b\x02", "\x01/b\x02"
-P, PE = "\x01p\x02", "\x01/p\x02"
 
-
-def http_json(url: str, body: dict | None = None, timeout: int = 300,
-              headers: dict | None = None, raw: bytes | None = None) -> dict:
+def http_json(url, body=None, timeout=300, headers=None, raw=None):
     data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
     hdrs = dict(headers or {})
     if body is not None and raw is None:
@@ -91,23 +91,22 @@ def http_json(url: str, body: dict | None = None, timeout: int = 300,
             return json.load(r)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
-        msg = re.search(r'"message":\s*"([^"]{0,300})', detail)
+        msg = re.search(r'"message":\s*"([^"]{0,200})', detail)
         safe = re.sub(r"key=[^&]+", "key=***", url)
-        print(f"[HTTP {e.code}] {safe}\n   {msg.group(1) if msg else detail[:300]}")
+        print(f"[HTTP {e.code}] {safe}\n   {msg.group(1) if msg else detail[:200]}")
         raise
 
 
 # ---------- Gemini ----------
 
-def list_models(key: str) -> tuple[str, list[str]]:
+def list_models(key):
     for ver in ("v1beta", "v1"):
         try:
             res = http_json(f"{HOST}/{ver}/models?key={key}", timeout=30)
         except urllib.error.HTTPError:
             continue
         names = [
-            m["name"]
-            for m in res.get("models", [])
+            m["name"] for m in res.get("models", [])
             if "generateContent" in m.get("supportedGenerationMethods", [])
             and not any(x in m["name"] for x in
                         ("image", "tts", "embedding", "vision", "live", "omni"))
@@ -117,18 +116,17 @@ def list_models(key: str) -> tuple[str, list[str]]:
     raise SystemExit("모델 목록을 가져오지 못했습니다.")
 
 
-def rank(names: list[str]) -> list[str]:
-    def score(n: str) -> tuple:
+def rank(names):
+    def score(n):
         m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
         ver = float(m.group(1)) if m else 0.0
         is_flash = "flash" in n and "lite" not in n
         return (0 if is_flash else 1 if "flash" in n else 2,
                 1 if ("preview" in n or "exp" in n) else 0, -ver, n)
-
     return sorted(names, key=score)
 
 
-def extract_json(text: str) -> dict:
+def extract_json(text):
     t = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
     try:
         return json.loads(t)
@@ -155,30 +153,37 @@ def call(key, ver, name, system, prompt, with_search):
     return extract_json(text)
 
 
-def generate(key, ver, candidates, system, prompt, need_search):
-    orders = (True, False) if not need_search else (True,)
-    for name in candidates[:6]:
-        for with_search in orders:
-            tag = "검색O" if with_search else "검색X"
-            try:
-                report = call(key, ver, name, system, prompt, with_search)
-            except urllib.error.HTTPError:
-                print(f"[skip] {name} ({tag})")
-                continue
-            except (json.JSONDecodeError, KeyError, IndexError) as e:
-                print(f"[skip] {name} ({tag}) 파싱 실패: {e}")
-                continue
-            print(f"[model] {name} ({tag}) 사용")
-            return report
-    raise SystemExit("사용 가능한 모델을 찾지 못했습니다.")
+def try_generate(key, ver, candidates, system, prompt, with_search, retry_429=True):
+    """성공하면 (report, 사용모델), 실패하면 (None, None)."""
+    tag = "검색O" if with_search else "검색X"
+    for i, name in enumerate(candidates[:4]):
+        if i:
+            time.sleep(3)  # 분당 한도 보호
+        try:
+            return call(key, ver, name, system, prompt, with_search), name
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and retry_429 and i == 0:
+                print("   분당 한도로 보임 -> 65초 대기 후 1회 재시도")
+                time.sleep(65)
+                try:
+                    return call(key, ver, name, system, prompt, with_search), name
+                except urllib.error.HTTPError:
+                    pass
+            print(f"[skip] {name} ({tag})")
+        except (json.JSONDecodeError, KeyError, IndexError) as ex:
+            print(f"[skip] {name} ({tag}) 파싱 실패: {ex}")
+    return None, None
 
 
 # ---------- 데이터 ----------
 
-def load_snapshots(date_kst: dt.date) -> list:
+def load_snapshots(date_kst):
     path = Path("snapshots") / f"{date_kst:%Y-%m-%d}.jsonl"
     if not path.exists():
-        return []
+        files = sorted(Path("snapshots").glob("*.jsonl"))
+        if not files:
+            return []
+        path = files[-1]
     snaps = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     for rec in snaps:
         for k, v in rec.get("data", {}).items():
@@ -190,7 +195,7 @@ def load_snapshots(date_kst: dt.date) -> list:
 
 # ---------- Blogger ----------
 
-def blogger_token() -> str:
+def blogger_token():
     data = urllib.parse.urlencode({
         "client_id": os.environ["BLOGGER_CLIENT_ID"],
         "client_secret": os.environ["BLOGGER_CLIENT_SECRET"],
@@ -202,7 +207,7 @@ def blogger_token() -> str:
     return res["access_token"]
 
 
-def post_to_blogger(title: str, body_html: str, labels: list) -> str:
+def post_to_blogger(title, body_html, labels):
     token = blogger_token()
     blog_id = os.environ["BLOG_ID"]
     url = f"https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts/"
@@ -215,62 +220,73 @@ def post_to_blogger(title: str, body_html: str, labels: list) -> str:
     return res.get("url") or f"https://www.blogger.com/blog/posts/{blog_id}"
 
 
-# ---------- 텔레그램 ----------
-
-def send_telegram(text: str) -> None:
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat = os.environ["TELEGRAM_CHAT_ID"]
-    data = urllib.parse.urlencode(
-        {"chat_id": chat, "text": text, "parse_mode": "HTML"}
-    ).encode()
+def send_telegram(text):
+    data = urllib.parse.urlencode({
+        "chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text, "parse_mode": "HTML"
+    }).encode()
     req = urllib.request.Request(
-        f"https://api.telegram.org/bot{token}/sendMessage", data=data
-    )
+        f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+        data=data)
     with urllib.request.urlopen(req, timeout=30) as r:
         r.read()
 
 
 # ---------- 본문 ----------
 
-def main() -> None:
+def main():
     key = os.environ["GEMINI_API_KEY"]
     now_kst = dt.datetime.now(dt.timezone.utc).astimezone(KST)
     snaps = load_snapshots(now_kst.date())
 
-    # 화~토(1~5) + 스냅샷 충분 -> 시장리뷰, 그 외 -> 뉴스 (휴장일 자동 폴백)
     market = now_kst.weekday() in (1, 2, 3, 4, 5) and len(snaps) >= 4
-    mode = "시장리뷰" if market else "뉴스"
-    print(f"[mode] {mode} / 스냅샷 {len(snaps)}건 / 초안={DRAFT}")
+    print(f"[mode] {'시장리뷰' if market else '뉴스'} / 스냅샷 {len(snaps)}건 / 초안={DRAFT}")
+
+    ver, names = list_models(key)
+    cands = rank(names)
+    print(f"[api] {ver} / {', '.join(n.split('/')[-1] for n in cands[:4])}")
+
+    data_prompt = (
+        f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
+        f"[스냅샷 {len(snaps)}건] 금리 항목의 chg_bp는 bp 단위 변동이다.\n"
+        + json.dumps(snaps, ensure_ascii=False)
+        + "\n\n마지막 스냅샷이 사실상 종가다."
+    )
 
     if market:
-        system = MARKET_SYSTEM
-        prompt = (
-            f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
-            f"[장중 스냅샷 {len(snaps)}건] 금리 항목의 chg_bp는 bp 단위 변동이다.\n"
-            + json.dumps(snaps, ensure_ascii=False)
-            + "\n\n마지막 스냅샷이 사실상 종가다. 장중 흐름의 변화도 해석에 반영하라."
-        )
+        # 검색 되면 좋고, 안 되면 데이터만으로 작성
+        report, used = try_generate(key, ver, cands, MARKET_SYSTEM, data_prompt, True)
+        if report is None:
+            report, used = try_generate(key, ver, cands, MARKET_SYSTEM, data_prompt, False)
+        mode = "시장리뷰"
     else:
-        system = NEWS_SYSTEM
-        prompt = (
+        news_prompt = (
             f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
             "미국장 휴장 구간이므로 지난 24~48시간의 주요 금융·경제 뉴스를 검색해 정리하라."
         )
+        report, used = try_generate(key, ver, cands, NEWS_SYSTEM, news_prompt, True)
+        mode = "뉴스"
+        if report is None:
+            # 검색이 막히면 뉴스를 지어내는 대신 데이터 기반 주간 정리로 전환
+            print("[fallback] 검색 불가 -> 데이터 기반 주간 정리로 전환")
+            report, used = try_generate(key, ver, cands, RECAP_SYSTEM, data_prompt, False)
+            mode = "주간정리"
 
-    ver, names = list_models(key)
-    report = generate(key, ver, rank(names), system, prompt, need_search=not market)
+    if report is None:
+        send_telegram("⚠️ 오늘 리포트 생성 실패 (API 한도 초과로 보임). 발행을 건너뜁니다.")
+        print("생성 실패 - 발행 건너뜀")
+        return
 
+    print(f"[model] {used} / [mode] {mode}")
     labels = (report.get("labels") or []) + [mode]
     url = post_to_blogger(report["title"], report["html"], labels)
     print(f"[blogger] {url}")
 
     prefix = "[초안] " if DRAFT else ""
-    msg = (
+    send_telegram(
         f"{prefix}<b>{htmllib.escape(report['title'])}</b>\n\n"
         + "\n".join(f"▸ {htmllib.escape(s)}" for s in report["summary3"])
         + f"\n\n{url}"
     )
-    send_telegram(msg)
     print("[telegram] 전송 완료")
 
 
