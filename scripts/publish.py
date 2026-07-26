@@ -37,7 +37,7 @@ COMMON = """당신은 한국어 금융 블로그의 필자다.
 title에는 날짜를 넣지 않는다. 날짜는 나중에 자동으로 붙는다.
 html 본문은 <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다.
 style 속성이나 색상은 넣지 않는다. 서식은 나중에 자동으로 입혀진다.
-summary3은 텔레그램용 3줄 요약이며 각 45자 내외."""
+summary3은 텔레그램용 3줄 요약이며 각 45자 내외.\nlabels는 해시태그로 쓰인다. 공백 없는 한글 키워드 4~5개를 넣는다. (예: 미국증시, 국채금리, 반도체)"""
 
 INTERP_RULE = """
     해석은 이 글의 핵심이다. 불릿 3~4개로 쓰되 각 불릿은 두 문장까지 허용하고,
@@ -68,10 +68,10 @@ MARKET_BODY = """
     확인하지 못했으면 <p>확인된 주요 일정이 없습니다.</p> 로 대체한다. 날짜를 추측하지 않는다."""
 
 MARKET_SYSTEM = COMMON + "\n\n새벽 미국시장 데이터를 받아 아침 리뷰를 쓴다. 아래 세 부분으로만 구성한다." \
-    + MARKET_BODY.format(heading="시장을 지배한 핵심 이슈 3가지")
+    + MARKET_BODY.format(heading="시장을 움직인 3가지 요인")
 
 RECAP_SYSTEM = COMMON + "\n\n미국장 휴장일이다. 가장 최근 거래일 데이터로 정리를 쓴다." \
-    + MARKET_BODY.format(heading="지난 거래일 시장을 움직인 3가지")
+    + MARKET_BODY.format(heading="시장을 움직인 3가지 요인")
 
 NEWS_SYSTEM = COMMON + """
 
@@ -79,7 +79,7 @@ NEWS_SYSTEM = COMMON + """
 반드시 웹 검색으로 실제 보도된 내용만 쓰고, 확인되지 않은 내용은 쓰지 않는다.
 각 뉴스는 언제 보도된 것인지 시점을 밝힌다.
 
-[1] <h2>주말 주요 뉴스 3가지</h2>
+[1] <h2>주말 시장을 움직인 3가지 요인</h2>
     <h3>1. [분야] 뉴스 제목</h3>
     <p>1) 현황: 무슨 일이 있었는지 한두 문장</p>
     <p>2) 원인</p>
@@ -95,8 +95,12 @@ NEWS_SYSTEM = COMMON + """
 
 # ---------- 서식 ----------
 TABLE = 'style="width:100%;border-collapse:collapse;font-size:15px;margin:18px 0 6px;"'
-HEAD_TD = 'style="background:#f1f5f9;font-weight:700;padding:10px 8px;border-bottom:2px solid #cbd5e1;text-align:left;"'
-TD = 'style="padding:9px 8px;border-bottom:1px solid #e5e7eb;"'
+HEAD_L = 'style="background:#f1f5f9;font-weight:700;padding:10px 10px;border-bottom:2px solid #cbd5e1;text-align:left;"'
+HEAD_R = 'style="background:#f1f5f9;font-weight:700;padding:10px 10px;border-bottom:2px solid #cbd5e1;text-align:right;"'
+TD_NAME = 'style="padding:9px 10px;border-bottom:1px solid #e5e7eb;font-weight:700;"'
+TD_NUM = 'style="padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:right;font-variant-numeric:tabular-nums;"'
+BOX_NOW = 'style="background:#f1f5f9;border-left:4px solid #64748b;padding:12px 16px;margin:12px 0 14px;border-radius:6px;"'
+TAGS = 'style="margin:30px 0 0;font-size:14px;color:#2563eb;line-height:1.9;"'
 H2 = 'style="font-size:20px;font-weight:700;margin:36px 0 14px;padding-bottom:8px;border-bottom:2px solid #334155;"'
 H3 = 'style="font-size:17px;font-weight:700;margin:28px 0 12px;padding:8px 0 8px 12px;border-left:4px solid #2563eb;background:#f8fafc;"'
 PP = 'style="line-height:1.8;margin:10px 0;"'
@@ -116,8 +120,14 @@ def wrap_interpretation(html: str) -> str:
     return pat.sub(lambda m: f"<div {BOX}>{m.group(1)}</div>", html)
 
 
+def wrap_status(html: str) -> str:
+    pat = re.compile(r"(?is)(<p[^>]*>\s*1\)\s*현황.*?</p>)")
+    return pat.sub(lambda m: f"<div {BOX_NOW}>{m.group(1)}</div>", html)
+
+
 def style_html(html: str) -> str:
     html = wrap_interpretation(html)
+    html = wrap_status(html)
 
     def color(m):
         v = m.group(0)
@@ -131,8 +141,14 @@ def style_html(html: str) -> str:
     def table(m):
         t = m.group(0)
         for i, r in enumerate(re.findall(r"(?is)<tr[^>]*>.*?</tr>", t)):
-            style = HEAD_TD if i == 0 else TD
-            t = t.replace(r, re.sub(r"(?i)<(td|th)[^>]*>", f"<\\1 {style}>", r), 1)
+            nr = r
+            for j, c in enumerate(re.findall(r"(?is)<t[dh][^>]*>.*?</t[dh]>", r)):
+                if i == 0:
+                    st = HEAD_L if j == 0 else HEAD_R
+                else:
+                    st = TD_NAME if j == 0 else TD_NUM
+                nr = nr.replace(c, re.sub(r"(?i)^<(td|th)[^>]*>", f"<\\1 {st}>", c), 1)
+            t = t.replace(r, nr, 1)
         return re.sub(r"(?i)^<table[^>]*>", f"<table {TABLE}>", t)
 
     html = re.sub(r"(?is)<table.*?</table>", table, html)
@@ -355,14 +371,18 @@ def main():
     if mode != "뉴스":
         body = insert_extras(body, stem, snaps)
 
+    labels = (report.get("labels") or []) + [mode]
+    tags = " ".join("#" + re.sub(r"[\s#]+", "", t) for t in labels if t.strip())
+    body += f'<p {TAGS}>{tags}</p>'
+
     title = f"{now_kst:%y%m%d}_{report['title']}"
-    url = post_to_blogger(title, body, (report.get("labels") or []) + [mode])
+    url = post_to_blogger(title, body, labels)
     print(f"[blogger] {url}")
 
     prefix = "[초안] " if DRAFT else ""
     send_telegram(f"{prefix}<b>{htmllib.escape(title)}</b>\n\n"
                   + "\n".join(f"▸ {htmllib.escape(s)}" for s in report["summary3"])
-                  + f"\n\n{url}")
+                  + f"\n\n{url}\n\n{htmllib.escape(tags)}")
     print("[telegram] 전송 완료")
 
 
