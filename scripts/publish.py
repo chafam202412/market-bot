@@ -21,33 +21,44 @@ COMMON = """당신은 한국어 금융 블로그의 필자다.
 
 원칙:
 - 주어진 숫자 밖의 수치를 절대 만들어내지 않는다. 모르면 언급하지 않는다.
+- 수치를 처음 제시할 때는 반드시 기준을 밝힌다. (예: "직전 거래일 종가 기준", "전 거래일 대비")
 - 금리는 반드시 bp(베이시스포인트)로 표기한다. 금리 변동을 %로 쓰지 않는다.
 - 원인은 단정하지 말고 시장의 통상적 해석으로 서술한다. ("~라는 분석이 우세합니다")
 - 국내 금융시장에서 실제로 통용되는 표준 용어만 쓴다. 임의로 단어를 만들거나 변형하지 않는다.
   올바른 예: 안전자산 선호, 위험자산 선호, 차익실현, 되돌림, 순환매, 커브 스티프닝, 커브 플래트닝,
   강세/약세, 매수세/매도세, 반발 매수, 경계감, 관망세.
 - 전문용어는 처음 나올 때 괄호로 짧게 풀어준다.
-- 현황은 짧게, 원인과 해석에 분량을 쓴다.
-- 본문 전체 2,500자 안팎.
+- 현황은 짧게. 원인은 충실히. 해석에 가장 많은 분량을 쓴다.
+- 본문 전체 3,500자 안팎. 해설이 두터운 글을 쓴다.
 
 반드시 아래 JSON 형식으로만 답한다. 다른 말은 붙이지 않는다.
 {"title": "...", "html": "...", "summary3": ["...", "...", "..."], "labels": ["..."]}
 
+title에는 날짜를 넣지 않는다. 날짜는 나중에 자동으로 붙는다.
 html 본문은 <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다.
 style 속성이나 색상은 넣지 않는다. 서식은 나중에 자동으로 입혀진다.
 summary3은 텔레그램용 3줄 요약이며 각 45자 내외."""
 
+INTERP_RULE = """
+    해석은 이 글의 핵심이다. 불릿 3~4개로 쓰되 각 불릿은 두 문장까지 허용하고,
+    아래 세 가지를 반드시 담는다.
+    - 이 흐름이 이어지려면 무엇이 유지되어야 하는지
+    - 반대로 꺾인다면 어떤 신호가 먼저 나타날지
+    - 투자자가 다음에 확인해야 할 지표나 이벤트는 무엇인지
+    비교가 필요하면 해석 안에 작은 <table>을 넣어 정리해도 좋다."""
+
 MARKET_BODY = """
-[1] 맨 위 주요 지표 <table>. 첫 행은 머리글(지표/종가/등락).
+[1] 맨 위 주요 지표 <table>. 첫 행 머리글은 (지표 / 종가 / 전 거래일 대비).
     주가지수는 %, 금리는 bp, 환율·유가·금은 % 로 표기.
 
 [2] <h2>{heading}</h2>
     <h3>1. [주식] 이슈 제목</h3>
-    <p>1) 현황: 한두 문장</p>
+    <p>1) 현황: 한두 문장. 첫 문장에 기준 시점을 밝힌다.</p>
     <p>2) 원인</p>
-    <ul><li>...</li><li>...</li></ul>
+    <ul><li>...</li><li>...</li><li>...</li></ul>
     <p>3) 해석</p>
-    <ul><li>...</li><li>...</li></ul>
+    <ul><li>...</li><li>...</li><li>...</li></ul>
+""" + INTERP_RULE + """
 
     <h3>2. [채권] 이슈 제목</h3>   (같은 형식)
     <h3>3. [기타] 이슈 제목</h3>   (환율·원자재·가상자산 중 움직임이 가장 큰 것)
@@ -66,14 +77,16 @@ NEWS_SYSTEM = COMMON + """
 
 오늘은 미국장 휴장일이다. 시황 대신 지난 24~48시간의 주요 금융·경제 뉴스를 정리한다.
 반드시 웹 검색으로 실제 보도된 내용만 쓰고, 확인되지 않은 내용은 쓰지 않는다.
+각 뉴스는 언제 보도된 것인지 시점을 밝힌다.
 
 [1] <h2>주말 주요 뉴스 3가지</h2>
     <h3>1. [분야] 뉴스 제목</h3>
     <p>1) 현황: 무슨 일이 있었는지 한두 문장</p>
     <p>2) 원인</p>
-    <ul><li>...</li><li>...</li></ul>
+    <ul><li>...</li><li>...</li><li>...</li></ul>
     <p>3) 해석</p>
-    <ul><li>...</li><li>...</li></ul>
+    <ul><li>...</li><li>...</li><li>...</li></ul>
+""" + INTERP_RULE + """
 
     분야는 통화정책·경제지표·기업·지정학·원자재 중 그 주에 실제로 중요했던 것으로 고른다.
 
@@ -81,7 +94,7 @@ NEWS_SYSTEM = COMMON + """
     검색으로 확인된 것만. 없으면 <p>확인된 주요 일정이 없습니다.</p>"""
 
 # ---------- 서식 ----------
-TABLE = 'style="width:100%;border-collapse:collapse;font-size:15px;margin:18px 0 8px;"'
+TABLE = 'style="width:100%;border-collapse:collapse;font-size:15px;margin:18px 0 6px;"'
 HEAD_TD = 'style="background:#f1f5f9;font-weight:700;padding:10px 8px;border-bottom:2px solid #cbd5e1;text-align:left;"'
 TD = 'style="padding:9px 8px;border-bottom:1px solid #e5e7eb;"'
 H2 = 'style="font-size:20px;font-weight:700;margin:36px 0 14px;padding-bottom:8px;border-bottom:2px solid #334155;"'
@@ -91,10 +104,21 @@ UL = 'style="line-height:1.85;margin:8px 0 18px;padding-left:24px;"'
 LI = 'style="margin:7px 0;"'
 IMG = 'style="width:100%;height:auto;margin:6px 0;border:1px solid #e5e7eb;border-radius:8px;"'
 CAP = 'style="font-size:13px;color:#6b7280;text-align:center;margin:4px 0 22px;"'
+NOTE = 'style="font-size:13px;color:#64748b;margin:2px 0 20px;"'
 LABEL = 'style="font-weight:700;color:#0f172a;border-bottom:2px solid #fcd34d;padding-bottom:1px;"'
+BOX = 'style="background:#fffbeb;border-left:4px solid #f59e0b;padding:14px 18px;margin:14px 0 22px;border-radius:6px;"'
+
+
+def wrap_interpretation(html: str) -> str:
+    pat = re.compile(
+        r"(?is)(<p[^>]*>\s*3\)\s*해석\s*</p>\s*(?:<ul[^>]*>.*?</ul>|<p[^>]*>.*?</p>|<table[^>]*>.*?</table>)+)"
+    )
+    return pat.sub(lambda m: f"<div {BOX}>{m.group(1)}</div>", html)
 
 
 def style_html(html: str) -> str:
+    html = wrap_interpretation(html)
+
     def color(m):
         v = m.group(0)
         c = "#d32f2f" if v.startswith("+") else "#1565c0"
@@ -120,20 +144,35 @@ def style_html(html: str) -> str:
     return html
 
 
-def insert_charts(html: str, stem: str) -> str:
+def basis_note(snaps: list) -> str:
+    if not snaps:
+        return ""
+    try:
+        ts = dt.datetime.fromisoformat(snaps[-1]["ts_kst"])
+        stamp = f"{ts:%Y년 %m월 %d일 %H:%M} KST"
+    except Exception:
+        stamp = snaps[-1].get("ts_kst", "")
+    return (f'<p {NOTE}>※ 위 수치는 {stamp} 수집 시점 기준이며, '
+            f'등락은 직전 거래일 종가 대비입니다.</p>')
+
+
+def insert_extras(html: str, stem: str, snaps: list) -> str:
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     base = f"https://raw.githubusercontent.com/{repo}/main/charts/"
-
     intra = Path("charts") / f"{stem}-intraday.png"
     sect = Path("charts") / f"{stem}-sector.png"
 
+    add = basis_note(snaps)
     if intra.exists() and repo:
-        block = (f'<img src="{base}{intra.name}" {IMG}>'
-                 f'<p {CAP}>새벽 00:00~06:30(KST) 30분 간격 지수 흐름</p>')
-        html = html.replace("</table>", "</table>" + block, 1) if "</table>" in html else block + html
+        add += (f'<img src="{base}{intra.name}" {IMG}>'
+                f'<p {CAP}>새벽 00:00~06:30(KST) 30분 간격 지수 흐름</p>')
+    if "</table>" in html:
+        html = html.replace("</table>", "</table>" + add, 1)
+    else:
+        html = add + html
+
     if sect.exists() and repo:
-        block = (f'<img src="{base}{sect.name}" {IMG}>'
-                 f'<p {CAP}>섹터별 등락률</p>')
+        block = f'<img src="{base}{sect.name}" {IMG}><p {CAP}>섹터별 등락률</p>'
         idx = html.rfind("<h2")
         html = (html[:idx] + block + html[idx:]) if idx != -1 else html + block
     return html
@@ -287,7 +326,8 @@ def main():
     cands = rank(names)
 
     data_prompt = (f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
-                   f"[스냅샷 {len(snaps)}건] 금리 항목의 chg_bp는 bp 단위 변동이다.\n"
+                   f"[스냅샷 {len(snaps)}건] ts_kst는 수집 시각(KST), "
+                   f"chg_bp는 bp 단위 변동, prev_close는 직전 거래일 종가다.\n"
                    + json.dumps(snaps, ensure_ascii=False)
                    + "\n\n마지막 스냅샷이 사실상 종가다.")
 
@@ -313,13 +353,14 @@ def main():
     print(f"[model] {used} / [mode] {mode}")
     body = style_html(report["html"])
     if mode != "뉴스":
-        body = insert_charts(body, stem)
+        body = insert_extras(body, stem, snaps)
 
-    url = post_to_blogger(report["title"], body, (report.get("labels") or []) + [mode])
+    title = f"{now_kst:%y%m%d}_{report['title']}"
+    url = post_to_blogger(title, body, (report.get("labels") or []) + [mode])
     print(f"[blogger] {url}")
 
     prefix = "[초안] " if DRAFT else ""
-    send_telegram(f"{prefix}<b>{htmllib.escape(report['title'])}</b>\n\n"
+    send_telegram(f"{prefix}<b>{htmllib.escape(title)}</b>\n\n"
                   + "\n".join(f"▸ {htmllib.escape(s)}" for s in report["summary3"])
                   + f"\n\n{url}")
     print("[telegram] 전송 완료")
