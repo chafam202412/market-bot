@@ -22,7 +22,11 @@ SYSTEM = """당신은 한국어 금융 블로그의 필자다. 새벽 미국시�
 - 금리는 반드시 bp(베이시스포인트)로 표기한다. 데이터의 chg_bp 값을 쓰고 금리 변동을 %로 쓰지 않는다.
   (예: "10년물 4.679%, 2.4bp 하락")
 - 원인은 단정하지 말고 시장의 통상적 해석으로 서술한다. ("~라는 분석이 우세합니다", "~로 풀이됩니다")
-- 전문용어는 괄호로 짧게 풀어준다. (예: 차익실현(오른 종목을 팔아 이익을 확정하는 것))
+- 국내 금융시장에서 실제로 통용되는 표준 용어만 쓴다. 임의로 단어를 만들거나 변형하지 않는다.
+  올바른 예: 안전자산 선호, 위험자산 선호, 차익실현, 되돌림, 순환매, 커브 스티프닝, 커브 플래트닝,
+  강세/약세, 매수세/매도세, 반발 매수, 경계감, 관망세.
+  쓰지 말 것: 사전에 없는 조어, 오탈자, 어색한 한자 조합.
+- 전문용어는 처음 나올 때 괄호로 짧게 풀어준다. (예: 차익실현(오른 종목을 팔아 이익을 확정하는 것))
 - 현황은 짧게, 원인과 해석에 분량을 쓴다.
 - 본문 전체 2,500자 안팎.
 
@@ -36,7 +40,7 @@ html 본문은 <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다.
     주가지수는 %, 금리는 bp, 환율·유가·금은 % 로 표기.
 
 [2] <h2>시장을 지배한 핵심 이슈 3가지</h2>
-    이슈는 반드시 아래 세 가지 영역을 하나씩 맡는다. 순서와 말머리를 그대로 지킨다.
+    이슈는 반드시 아래 세 영역을 하나씩 맡는다. 순서와 말머리를 그대로 지킨다.
     <h3>1. [주식] 이슈 제목</h3>
     <p>1) 현황: 한두 문장</p>
     <p>2) 원인</p>
@@ -45,7 +49,7 @@ html 본문은 <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다.
     <ul><li>...</li><li>...</li></ul>
 
     <h3>2. [채권] 이슈 제목</h3>   (같은 형식)
-    <h3>3. [기타] 이슈 제목</h3>   (환율·원자재·가상자산 중 그날 가장 움직임이 큰 것)
+    <h3>3. [기타] 이슈 제목</h3>   (환율·원자재·가상자산 중 그날 움직임이 가장 큰 것)
 
     원인과 해석은 각각 불릿 2~3개, 한 불릿은 한 문장.
     해석에는 이 움직임이 앞으로 무엇을 의미하는지를 담는다.
@@ -137,7 +141,7 @@ def call(key: str, ver: str, name: str, prompt: str, with_search: bool) -> dict:
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 32768},
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 32768},
     }
     if with_search:
         body["tools"] = [{"google_search": {}}]
@@ -198,16 +202,18 @@ def _table_repl(m: re.Match) -> str:
 def html_to_telegram(html: str) -> str:
     t = re.sub(r"(?is)<table.*?</table>", _table_repl, html)
     t = re.sub(r"(?is)<h2[^>]*>(.*?)</h2>",
-               lambda m: f"\n\n━━━━━━━━━━━━\n{B}{m.group(1).strip()}{BE}\n", t)
+               lambda m: f"\n\n━━━━━━━━━━━━\n{B}{m.group(1).strip()}{BE}\n\n", t)
     t = re.sub(r"(?is)<h3[^>]*>(.*?)</h3>",
-               lambda m: f"\n\n{B}{m.group(1).strip()}{BE}\n", t)
+               lambda m: f"\n\n{B}{m.group(1).strip()}{BE}\n\n", t)
     t = re.sub(r"(?is)<li[^>]*>(.*?)</li>", lambda m: f"  · {m.group(1).strip()}\n", t)
+    t = re.sub(r"(?is)</ul>", "\n", t)
     t = re.sub(r"(?is)</p>", "\n\n", t)
     t = re.sub(r"(?is)<br\s*/?>", "\n", t)
     t = re.sub(r"<[^>]+>", "", t)
     t = htmllib.unescape(t)
-    # "1) 현황", "2) 원인", "3) 해석" 말머리를 굵게
-    t = re.sub(r"(?m)^\s*(\d\)\s*(?:현황|원인|해석))", lambda m: f"{B}{m.group(1)}{BE}", t)
+    # 말머리를 굵게. ^[ \t]* 로 잡아야 앞의 빈 줄이 먹히지 않는다.
+    t = re.sub(r"(?m)^[ \t]*(\d\)\s*(?:현황|원인|해석))",
+               lambda m: f"{B}{m.group(1)}{BE}", t)
     t = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     t = (t.replace(B, "<b>").replace(BE, "</b>")
           .replace(P, "<pre>").replace(PE, "</pre>"))
