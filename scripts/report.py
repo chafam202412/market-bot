@@ -17,6 +17,7 @@ SYSTEM = """당신은 한국어 금융 블로그의 필자다. 새벽 미국시�
 - 주어진 숫자 밖의 수치를 절대 만들어내지 않는다. 모르면 언급하지 않는다.
 - 등락에 사후 서사를 단정하지 않는다. "시장이 붙인 설명"과 "해석"을 구분해 쓴다.
 - 과장이나 낚시 표현을 쓰지 않는다. 담백한 전문가 톤.
+- 본문은 2,500자 안팎으로 쓴다. 장황하게 늘리지 않는다.
 
 반드시 아래 JSON 형식으로만 답한다.
 {"title": "...", "html": "...", "summary3": ["...", "...", "..."], "labels": ["..."]}
@@ -32,8 +33,7 @@ html은 블로그 본문이다. <h2>, <h3>, <p>, <table>, <ul>, <li>만 사용�
 summary3은 텔레그램용 3줄 요약이며 각 60자 내외로 쓴다."""
 
 
-def http_json(url: str, body: dict | None = None, timeout: int = 180) -> dict:
-    """실패 시 구글이 보낸 에러 본문을 그대로 출력한다."""
+def http_json(url: str, body: dict | None = None, timeout: int = 300) -> dict:
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"} if data else {}
     req = urllib.request.Request(url, data=data, headers=headers)
@@ -41,9 +41,10 @@ def http_json(url: str, body: dict | None = None, timeout: int = 180) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:1200]
+        detail = e.read().decode("utf-8", "replace")
+        msg = re.search(r'"message":\s*"([^"]{0,300})', detail)
         safe_url = re.sub(r"key=[^&]+", "key=***", url)
-        print(f"\n[HTTP {e.code}] {safe_url}\n{detail}\n")
+        print(f"[HTTP {e.code}] {safe_url}\n   {msg.group(1) if msg else detail[:300]}")
         raise
 
 
@@ -57,7 +58,9 @@ def list_models(key: str) -> tuple[str, list[str]]:
             m["name"]
             for m in res.get("models", [])
             if "generateContent" in m.get("supportedGenerationMethods", [])
-            and not any(x in m["name"] for x in ("image", "tts", "embedding", "vision", "live"))
+            and not any(
+                x in m["name"] for x in ("image", "tts", "embedding", "vision", "live", "omni")
+            )
         ]
         if names:
             return ver, names
@@ -65,10 +68,19 @@ def list_models(key: str) -> tuple[str, list[str]]:
 
 
 def rank(names: list[str]) -> list[str]:
+    """최신 flash 계열 우선. 버전 번호가 큰 것부터."""
+
     def score(n: str) -> tuple:
-        return (0 if "flash" in n and "lite" not in n else 1 if "flash" in n else 2,
-                1 if "preview" in n or "exp" in n else 0,
-                n)
+        m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+        ver = float(m.group(1)) if m else 0.0
+        is_flash = "flash" in n and "lite" not in n
+        return (
+            0 if is_flash else 1 if "flash" in n else 2,
+            1 if ("preview" in n or "exp" in n) else 0,
+            -ver,
+            n,
+        )
+
     return sorted(names, key=score)
 
 
@@ -85,23 +97,35 @@ def generate(key: str, ver: str, candidates: list[str], prompt: str) -> dict:
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.4,
-            "maxOutputTokens": 8192,
+            "maxOutputTokens": 32768,
             "responseMimeType": "application/json",
         },
     }
-    for name in candidates[:5]:
+    for name in candidates[:8]:
         url = f"{HOST}/{ver}/{name}:generateContent?key={key}"
         try:
             res = http_json(url, body)
         except urllib.error.HTTPError:
             print(f"[skip] {name}")
             continue
-        print(f"[model] {name} 사용")
-        text = "".join(
-            p.get("text", "") for p in res["candidates"][0]["content"]["parts"]
-        )
-        return json.loads(text)
-    raise SystemExit("사용 가능한 모델을 찾지 못했습니다. 위 에러 본문을 확인하세요.")
+
+        cand = res.get("candidates", [{}])[0]
+        finish = cand.get("finishReason", "?")
+        text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
+        text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+
+        try:
+            report = json.loads(text)
+        except json.JSONDecodeError as e:
+            print(f"[skip] {name}: 응답 파싱 실패 (finishReason={finish}, {e})")
+            print(f"   앞부분: {text[:200]}")
+            continue
+
+        usage = res.get("usageMetadata", {})
+        print(f"[model] {name} 사용 (finishReason={finish}, 출력토큰={usage.get('candidatesTokenCount')})")
+        return report
+
+    raise SystemExit("사용 가능한 모델을 찾지 못했습니다. 위 로그를 확인하세요.")
 
 
 def send_telegram(text: str) -> None:
@@ -137,9 +161,7 @@ def main() -> None:
 
     ver, names = list_models(key)
     ranked = rank(names)
-    print(f"[api] {ver} / 후보 {len(ranked)}개")
-    for n in ranked[:8]:
-        print(f"   - {n}")
+    print(f"[api] {ver} / 시도 순서: {', '.join(n.split('/')[-1] for n in ranked[:5])}")
 
     prompt = (
         f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
