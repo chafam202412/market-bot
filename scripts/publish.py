@@ -99,7 +99,6 @@ HEAD_L = 'style="background:#f1f5f9;font-weight:700;padding:10px 10px;border-bot
 HEAD_R = 'style="background:#f1f5f9;font-weight:700;padding:10px 10px;border-bottom:2px solid #cbd5e1;text-align:right;"'
 TD_NAME = 'style="padding:9px 10px;border-bottom:1px solid #e5e7eb;font-weight:700;"'
 TD_NUM = 'style="padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:right;font-variant-numeric:tabular-nums;"'
-BOX_NOW = 'style="background:#f1f5f9;border-left:4px solid #64748b;padding:12px 16px;margin:12px 0 14px;border-radius:6px;"'
 TAGS = 'style="margin:30px 0 0;font-size:14px;color:#2563eb;line-height:1.9;"'
 H2 = 'style="font-size:20px;font-weight:700;margin:36px 0 14px;padding-bottom:8px;border-bottom:2px solid #334155;"'
 H3 = 'style="font-size:17px;font-weight:700;margin:28px 0 12px;padding:8px 0 8px 12px;border-left:4px solid #2563eb;background:#f8fafc;"'
@@ -115,19 +114,18 @@ BOX = 'style="background:#fffbeb;border-left:4px solid #f59e0b;padding:14px 18px
 
 def wrap_interpretation(html: str) -> str:
     pat = re.compile(
-        r"(?is)(<p[^>]*>\s*3\)\s*해석\s*</p>\s*(?:<ul[^>]*>.*?</ul>|<p[^>]*>.*?</p>|<table[^>]*>.*?</table>)+)"
+        r"(?is)(<p[^>]*>\s*3\)\s*해석\s*</p>)(\s*(?:<ul[^>]*>.*?</ul>|<p[^>]*>.*?</p>|<table[^>]*>.*?</table>)+)"
     )
-    return pat.sub(lambda m: f"<div {BOX}>{m.group(1)}</div>", html)
 
+    def repl(m):
+        head = f'<p><span {LABEL}>해석</span></p>'
+        return f"<div {BOX}>{head}{m.group(2)}</div>"
 
-def wrap_status(html: str) -> str:
-    pat = re.compile(r"(?is)(<p[^>]*>\s*1\)\s*현황.*?</p>)")
-    return pat.sub(lambda m: f"<div {BOX_NOW}>{m.group(1)}</div>", html)
+    return pat.sub(repl, html)
 
 
 def style_html(html: str) -> str:
     html = wrap_interpretation(html)
-    html = wrap_status(html)
 
     def color(m):
         v = m.group(0)
