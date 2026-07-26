@@ -1,8 +1,9 @@
-"""미국 시장 30분 스냅샷 수집 (KST 00:00~06:00 구간에서 실행)."""
+"""미국 시장 스냅샷 수집 (KST 00:00~06:30 구간에서 30분마다 실행)."""
 import datetime as dt
 import json
 from pathlib import Path
 
+import pandas as pd
 import yfinance as yf
 
 KST = dt.timezone(dt.timedelta(hours=9))
@@ -21,42 +22,74 @@ TICKERS = {
     "WTI": "CL=F",
     "GOLD": "GC=F",
     "BTC": "BTC-USD",
-    # 섹터 ETF (해석용)
     "XLK": "XLK",
     "XLF": "XLF",
     "XLE": "XLE",
     "SMH": "SMH",
 }
-# 참고: 2년물(^UST2YR)은 yfinance에 없음. 필요하면 FRED DGS2를 별도 호출할 것.
 
 
-def snapshot() -> dict:
+def _pack(series: pd.Series) -> dict:
+    last, prev = float(series.iloc[-1]), float(series.iloc[-2])
+    return {
+        "last": round(last, 4),
+        "prev_close": round(prev, 4),
+        "chg_pct": round((last / prev - 1) * 100, 3),
+    }
+
+
+def fetch_all() -> dict:
+    symbols = list(TICKERS.values())
+    close = pd.DataFrame()
+    try:
+        df = yf.download(
+            symbols, period="7d", interval="1d",
+            progress=False, auto_adjust=False, threads=False,
+        )
+        if not df.empty:
+            close = df["Close"]
+    except Exception as exc:
+        print(f"[batch] download failed: {type(exc).__name__}: {exc}")
+
     out = {}
-    for name, tk in TICKERS.items():
-        try:
-            fi = yf.Ticker(tk).fast_info
-            last = fi.get("last_price")
-            prev = fi.get("previous_close")
-            out[name] = {
-                "last": round(float(last), 4) if last else None,
-                "prev_close": round(float(prev), 4) if prev else None,
-                "chg_pct": round((float(last) / float(prev) - 1) * 100, 3)
-                if last and prev
-                else None,
-            }
-        except Exception as exc:  # 개별 티커 실패가 전체를 죽이지 않도록
-            out[name] = {"error": str(exc)[:120]}
+    for name, sym in TICKERS.items():
+        s = None
+        if sym in getattr(close, "columns", []):
+            s = close[sym].dropna()
+
+        if s is None or len(s) < 2:  # 개별 재시도
+            try:
+                s = yf.Ticker(sym).history(period="7d", interval="1d")["Close"].dropna()
+            except Exception as exc:
+                out[name] = {"error": f"{type(exc).__name__}: {exc}"[:150]}
+                continue
+
+        if s is None or len(s) < 2:
+            out[name] = {"error": "no data returned"}
+            continue
+
+        out[name] = _pack(s)
     return out
 
 
 def main() -> None:
     now_kst = dt.datetime.now(dt.timezone.utc).astimezone(KST)
+    data = fetch_all()
+
+    ok = sum(1 for v in data.values() if v.get("last") is not None)
+    print(f"\n=== {ok}/{len(data)} tickers OK ===")
+    for k, v in data.items():
+        if "error" in v:
+            print(f"  FAIL {k}: {v['error']}")
+        else:
+            print(f"  {k}: {v['last']} ({v['chg_pct']:+.2f}%)")
+
     path = Path("snapshots") / f"{now_kst:%Y-%m-%d}.jsonl"
     path.parent.mkdir(exist_ok=True)
-    rec = {"ts_kst": now_kst.isoformat(timespec="minutes"), "data": snapshot()}
+    rec = {"ts_kst": now_kst.isoformat(timespec="minutes"), "data": data}
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    print(f"snapshot written: {path} @ {rec['ts_kst']}")
+    print(f"\nwritten: {path}")
 
 
 if __name__ == "__main__":
