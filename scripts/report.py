@@ -3,12 +3,13 @@ import datetime as dt
 import json
 import os
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 KST = dt.timezone(dt.timedelta(hours=9))
-GEMINI = "https://generativelanguage.googleapis.com/v1beta"
+HOST = "https://generativelanguage.googleapis.com"
 
 SYSTEM = """당신은 한국어 금융 블로그의 필자다. 새벽 미국시장 스냅샷을 받아 아침 리뷰를 쓴다.
 
@@ -31,61 +32,85 @@ html은 블로그 본문이다. <h2>, <h3>, <p>, <table>, <ul>, <li>만 사용�
 summary3은 텔레그램용 3줄 요약이며 각 60자 내외로 쓴다."""
 
 
-def pick_model(key: str) -> str:
-    """무료 티어에서 쓸 수 있는 flash 계열 모델을 자동으로 고른다."""
-    if os.environ.get("GEMINI_MODEL"):
-        return os.environ["GEMINI_MODEL"]
-    with urllib.request.urlopen(f"{GEMINI}/models?key={key}", timeout=30) as r:
-        models = json.load(r).get("models", [])
-    usable = [
-        m["name"].split("/")[-1]
-        for m in models
-        if "generateContent" in m.get("supportedGenerationMethods", [])
-        and not any(x in m["name"] for x in ("image", "tts", "embedding", "vision"))
-    ]
-    for pref in ("flash", "lite", ""):
-        for m in usable:
-            if pref in m:
-                print(f"[model] {m}  (후보 {len(usable)}개)")
-                return m
-    raise RuntimeError("사용 가능한 모델을 찾지 못했습니다")
+def http_json(url: str, body: dict | None = None, timeout: int = 180) -> dict:
+    """실패 시 구글이 보낸 에러 본문을 그대로 출력한다."""
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    req = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:1200]
+        safe_url = re.sub(r"key=[^&]+", "key=***", url)
+        print(f"\n[HTTP {e.code}] {safe_url}\n{detail}\n")
+        raise
+
+
+def list_models(key: str) -> tuple[str, list[str]]:
+    for ver in ("v1beta", "v1"):
+        try:
+            res = http_json(f"{HOST}/{ver}/models?key={key}", timeout=30)
+        except urllib.error.HTTPError:
+            continue
+        names = [
+            m["name"]
+            for m in res.get("models", [])
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+            and not any(x in m["name"] for x in ("image", "tts", "embedding", "vision", "live"))
+        ]
+        if names:
+            return ver, names
+    raise SystemExit("모델 목록을 가져오지 못했습니다. API 키를 확인하세요.")
+
+
+def rank(names: list[str]) -> list[str]:
+    def score(n: str) -> tuple:
+        return (0 if "flash" in n and "lite" not in n else 1 if "flash" in n else 2,
+                1 if "preview" in n or "exp" in n else 0,
+                n)
+    return sorted(names, key=score)
 
 
 def latest_snapshot_file() -> Path:
     files = sorted(Path("snapshots").glob("*.jsonl"))
     if not files:
-        raise SystemExit("snapshots 폴더에 파일이 없습니다. collect를 먼저 실행하세요.")
+        raise SystemExit("snapshots 폴더가 비어 있습니다. collect를 먼저 실행하세요.")
     return files[-1]
 
 
-def generate(key: str, model: str, prompt: str) -> dict:
-    body = json.dumps(
-        {
-            "systemInstruction": {"parts": [{"text": SYSTEM}]},
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.4,
-                "maxOutputTokens": 8192,
-                "responseMimeType": "application/json",
-            },
-        }
-    ).encode()
-    req = urllib.request.Request(
-        f"{GEMINI}/models/{model}:generateContent?key={key}",
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=180) as r:
-        res = json.load(r)
-    text = "".join(p.get("text", "") for p in res["candidates"][0]["content"]["parts"])
-    return json.loads(text)
+def generate(key: str, ver: str, candidates: list[str], prompt: str) -> dict:
+    body = {
+        "systemInstruction": {"parts": [{"text": SYSTEM}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 8192,
+            "responseMimeType": "application/json",
+        },
+    }
+    for name in candidates[:5]:
+        url = f"{HOST}/{ver}/{name}:generateContent?key={key}"
+        try:
+            res = http_json(url, body)
+        except urllib.error.HTTPError:
+            print(f"[skip] {name}")
+            continue
+        print(f"[model] {name} 사용")
+        text = "".join(
+            p.get("text", "") for p in res["candidates"][0]["content"]["parts"]
+        )
+        return json.loads(text)
+    raise SystemExit("사용 가능한 모델을 찾지 못했습니다. 위 에러 본문을 확인하세요.")
 
 
 def send_telegram(text: str) -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat = os.environ["TELEGRAM_CHAT_ID"]
-    for i in range(0, len(text), 3800):  # 텔레그램 메시지 길이 제한
-        data = urllib.parse.urlencode({"chat_id": chat, "text": text[i : i + 3800]}).encode()
+    for i in range(0, len(text), 3800):
+        data = urllib.parse.urlencode(
+            {"chat_id": chat, "text": text[i : i + 3800]}
+        ).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage", data=data
         )
@@ -105,8 +130,16 @@ def main() -> None:
     now_kst = dt.datetime.now(dt.timezone.utc).astimezone(KST)
 
     path = latest_snapshot_file()
-    snaps = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    snaps = [
+        json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()
+    ]
     print(f"[data] {path.name}, 스냅샷 {len(snaps)}건")
+
+    ver, names = list_models(key)
+    ranked = rank(names)
+    print(f"[api] {ver} / 후보 {len(ranked)}개")
+    for n in ranked[:8]:
+        print(f"   - {n}")
 
     prompt = (
         f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
@@ -115,8 +148,7 @@ def main() -> None:
         + "\n\n마지막 스냅샷이 사실상 종가다. 장중 흐름의 변화도 해석에 반영하라."
     )
 
-    model = pick_model(key)
-    report = generate(key, model, prompt)
+    report = generate(key, ver, ranked, prompt)
     print(f"[title] {report['title']}")
 
     msg = (
