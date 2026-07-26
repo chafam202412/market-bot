@@ -11,29 +11,46 @@ from pathlib import Path
 
 KST = dt.timezone(dt.timedelta(hours=9))
 HOST = "https://generativelanguage.googleapis.com"
+YIELD_KEYS = {"US13W", "US5Y", "US10Y", "US30Y"}
 
-SYSTEM = """당신은 한국어 금융 블로그의 필자다. 새벽 미국시장 스냅샷을 받아 아침 리뷰를 쓴다.
+SYSTEM = """당신은 한국어 금융 블로그의 필자다. 새벽 미국시장 데이터를 받아 아침 리뷰를 쓴다.
+독자는 금융 전문가가 아니라 일반 투자자다. 글을 다 읽고 나면 "아, 이래서 시장이 이렇게 움직였구나"
+하고 이해할 수 있어야 한다. 숫자 나열이 아니라 인과를 설명하는 글을 쓴다.
 
 원칙:
 - 주어진 숫자 밖의 수치를 절대 만들어내지 않는다. 모르면 언급하지 않는다.
-- 등락에 사후 서사를 단정하지 않는다. "시장이 붙인 설명"과 "해석"을 구분해 쓴다.
-- 과장이나 낚시 표현을 쓰지 않는다. 담백한 전문가 톤.
-- 한 문단은 3문장을 넘기지 않는다. 같은 숫자를 여러 번 반복하지 않는다.
-- 본문 전체를 1,800자 안팎으로 쓴다.
+- 금리는 반드시 bp(베이시스포인트)로 표기한다. 데이터의 chg_bp 값을 쓰고, 금리 변동을 %로 쓰지 않는다.
+  (예: "10년물 4.679%, 2.4bp 하락")
+- "원인"은 단정하지 말고 시장의 통상적 해석으로 서술한다. ("~라는 분석이 우세합니다", "~로 풀이됩니다")
+- 전문용어를 쓰면 괄호로 짧게 풀어준다. (예: 차익실현(오른 종목을 팔아 이익을 확정하는 것))
+- 현황은 짧게, 원인과 해석에 분량을 쓴다.
+- 본문 전체 3,000자 안팎.
 
-반드시 아래 JSON 형식으로만 답한다.
+반드시 아래 JSON 형식으로만 답한다. 다른 말은 붙이지 않는다.
 {"title": "...", "html": "...", "summary3": ["...", "...", "..."], "labels": ["..."]}
 
-html은 블로그 본문이다. <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다. 구성:
-1) 맨 위에 주요 지표 요약 <table> (지수, 금리, 달러, 유가, VIX / 종가와 등락률). 첫 행은 머리글.
-2) <h2>시장을 지배한 핵심 이슈 3가지</h2>
-   각 이슈는 <h3>제목</h3> 뒤에 <p>현황: ...</p><p>시장이 붙인 설명: ...</p><p>해석: ...</p> 세 문단.
-3) <h2>주식시장 리뷰 및 해석</h2>
-4) <h2>채권시장 리뷰 및 해석</h2>
-5) <h2>기타 이슈</h2>
-6) <h2>향후 주요 일정</h2> 는 <ul><li> 목록으로.
+html 본문은 <h2>, <h3>, <p>, <table>, <tr>, <td>, <ul>, <li>만 사용한다. 구성:
 
-summary3은 텔레그램용 3줄 요약이며 각 45자 내외로 짧게 쓴다."""
+1) 맨 위 주요 지표 <table>. 첫 행은 머리글(지표/종가/등락).
+   주가지수는 %, 금리는 bp, 환율·유가·금은 % 로 표기.
+
+2) <h2>시장을 지배한 핵심 이슈 3가지</h2>
+   각 이슈마다:
+   <h3>1. 이슈 제목</h3>
+   <p>현황: 한두 문장으로 무슨 일이 있었는지</p>
+   <p>원인</p>
+   <ul><li>...</li><li>...</li></ul>   (2~3개, 각 한 문장)
+   <p>해석</p>
+   <ul><li>...</li><li>...</li></ul>   (2~3개, 이 움직임이 앞으로 무엇을 의미하는지)
+
+3) <h2>주식시장 리뷰 및 해석</h2> 지수별 차이와 섹터 자금 흐름을 문단으로.
+4) <h2>채권시장 리뷰 및 해석</h2> 금리 레벨과 커브 변화를 bp로.
+5) <h2>기타 이슈</h2> 환율, 원자재, 가상자산.
+6) <h2>향후 주요 일정</h2> <ul><li>날짜 - 일정명 - 왜 중요한지</li></ul>
+   검색으로 확인된 실제 일정만 쓴다. 확인하지 못했으면 목록 대신
+   <p>확인된 주요 일정이 없습니다.</p> 로 대체한다. 날짜를 추측해서 쓰지 않는다.
+
+summary3은 텔레그램용 3줄 요약이며 각 45자 내외."""
 
 B, BE = "\x01b\x02", "\x01/b\x02"
 P, PE = "\x01p\x02", "\x01/p\x02"
@@ -79,12 +96,8 @@ def rank(names: list[str]) -> list[str]:
         m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
         ver = float(m.group(1)) if m else 0.0
         is_flash = "flash" in n and "lite" not in n
-        return (
-            0 if is_flash else 1 if "flash" in n else 2,
-            1 if ("preview" in n or "exp" in n) else 0,
-            -ver,
-            n,
-        )
+        return (0 if is_flash else 1 if "flash" in n else 2,
+                1 if ("preview" in n or "exp" in n) else 0, -ver, n)
 
     return sorted(names, key=score)
 
@@ -96,33 +109,58 @@ def latest_snapshot_file() -> Path:
     return files[-1]
 
 
-def generate(key: str, ver: str, candidates: list[str], prompt: str) -> dict:
+def add_bp(snaps: list) -> list:
+    """금리 항목에 bp 변동을 계산해 넣는다."""
+    for rec in snaps:
+        for k, v in rec.get("data", {}).items():
+            if k in YIELD_KEYS and v.get("last") is not None and v.get("prev_close"):
+                v["chg_bp"] = round((v["last"] - v["prev_close"]) * 100, 1)
+                v.pop("chg_pct", None)  # 금리에 %는 오해를 부른다
+    return snaps
+
+
+def extract_json(text: str) -> dict:
+    t = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        s, e = t.find("{"), t.rfind("}")
+        if s == -1 or e == -1:
+            raise
+        return json.loads(t[s : e + 1])
+
+
+def call(key: str, ver: str, name: str, prompt: str, with_search: bool) -> dict:
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": 32768,
-            "responseMimeType": "application/json",
-        },
+        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 32768},
     }
-    for name in candidates[:8]:
-        try:
-            res = http_json(f"{HOST}/{ver}/{name}:generateContent?key={key}", body)
-        except urllib.error.HTTPError:
-            print(f"[skip] {name}")
-            continue
-        cand = res.get("candidates", [{}])[0]
-        finish = cand.get("finishReason", "?")
-        text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
-        text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
-        try:
-            report = json.loads(text)
-        except json.JSONDecodeError as e:
-            print(f"[skip] {name}: 파싱 실패 (finishReason={finish}, {e})")
-            continue
-        print(f"[model] {name} 사용 (finishReason={finish})")
-        return report
+    if with_search:
+        body["tools"] = [{"google_search": {}}]
+    else:
+        body["generationConfig"]["responseMimeType"] = "application/json"
+
+    res = http_json(f"{HOST}/{ver}/{name}:generateContent?key={key}", body)
+    cand = res.get("candidates", [{}])[0]
+    text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
+    return extract_json(text)
+
+
+def generate(key: str, ver: str, candidates: list[str], prompt: str) -> dict:
+    for name in candidates[:6]:
+        for with_search in (True, False):
+            tag = "검색O" if with_search else "검색X"
+            try:
+                report = call(key, ver, name, prompt, with_search)
+            except urllib.error.HTTPError:
+                print(f"[skip] {name} ({tag})")
+                continue
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                print(f"[skip] {name} ({tag}) 파싱 실패: {e}")
+                continue
+            print(f"[model] {name} ({tag}) 사용")
+            return report
     raise SystemExit("사용 가능한 모델을 찾지 못했습니다.")
 
 
@@ -150,9 +188,7 @@ def _table_repl(m: re.Match) -> str:
     n = max(len(r) for r in rows)
     rows = [r + [""] * (n - len(r)) for r in rows]
     widths = [max(_width(r[i]) for r in rows) for i in range(n)]
-    lines = [
-        "  ".join(_pad(c, widths[i]) for i, c in enumerate(r)).rstrip() for r in rows
-    ]
+    lines = ["  ".join(_pad(c, widths[i]) for i, c in enumerate(r)).rstrip() for r in rows]
     return f"\n{P}" + "\n".join(lines) + f"{PE}\n"
 
 
@@ -162,13 +198,13 @@ def html_to_telegram(html: str) -> str:
                lambda m: f"\n\n━━━━━━━━━━━━\n{B}{m.group(1).strip()}{BE}\n", t)
     t = re.sub(r"(?is)<h3[^>]*>(.*?)</h3>",
                lambda m: f"\n\n{B}◆ {m.group(1).strip()}{BE}\n", t)
-    t = re.sub(r"(?is)<li[^>]*>(.*?)</li>", lambda m: f"· {m.group(1).strip()}\n", t)
+    t = re.sub(r"(?is)<li[^>]*>(.*?)</li>", lambda m: f"  · {m.group(1).strip()}\n", t)
     t = re.sub(r"(?is)</p>", "\n\n", t)
     t = re.sub(r"(?is)<br\s*/?>", "\n", t)
     t = re.sub(r"<[^>]+>", "", t)
     t = htmllib.unescape(t)
-    t = re.sub(r"(?m)^\s*(현황|시장이 붙인 설명|해석)\s*:",
-               lambda m: f"{B}{m.group(1)}{BE}:", t)
+    t = re.sub(r"(?m)^\s*(현황|원인|해석)\s*:?\s*$", lambda m: f"{B}{m.group(1)}{BE}", t)
+    t = re.sub(r"(?m)^\s*(현황|원인|해석)\s*:", lambda m: f"{B}{m.group(1)}{BE}:", t)
     t = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     t = (t.replace(B, "<b>").replace(BE, "</b>")
           .replace(P, "<pre>").replace(PE, "</pre>"))
@@ -184,7 +220,7 @@ def send_telegram(text: str) -> None:
         if _width(buf) + _width(para) > 3400 and buf:
             chunks.append(buf)
             buf = ""
-        buf += (("\n\n" if buf else "") + para)
+        buf += ("\n\n" if buf else "") + para
     if buf:
         chunks.append(buf)
 
@@ -206,9 +242,9 @@ def main() -> None:
     now_kst = dt.datetime.now(dt.timezone.utc).astimezone(KST)
 
     path = latest_snapshot_file()
-    snaps = [
-        json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()
-    ]
+    snaps = add_bp(
+        [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    )
     print(f"[data] {path.name}, 스냅샷 {len(snaps)}건")
 
     ver, names = list_models(key)
@@ -217,9 +253,10 @@ def main() -> None:
 
     prompt = (
         f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다.\n"
-        f"[장중 스냅샷 {len(snaps)}건]\n"
+        f"[장중 스냅샷 {len(snaps)}건] 금리 항목의 chg_bp는 bp 단위 변동이다.\n"
         + json.dumps(snaps, ensure_ascii=False)
         + "\n\n마지막 스냅샷이 사실상 종가다. 장중 흐름의 변화도 해석에 반영하라."
+        + "\n향후 일정은 검색으로 실제 발표 예정일을 확인한 것만 쓴다."
     )
 
     report = generate(key, ver, ranked, prompt)
