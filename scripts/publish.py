@@ -39,6 +39,13 @@ COMMON = """당신은 한국어 금융 블로그의 필자다.
         강세/약세, 매수세/매도세, 반발 매수, 실적 발표, 공급 과잉, 수요 둔화, 규제 리스크.
 - 전문용어는 처음 나올 때 괄호로 짧게 풀어준다.
 
+맥락 규칙 — 오늘 하루만 보지 않는다:
+- [최근 거래일 추이]가 주어지면 오늘의 움직임을 그 흐름 속에 놓고 설명한다.
+  (예: "3거래일 연속 하락", "이번 주 누적 -3.2%", "지난주 고점 대비 되돌림")
+- 어제까지 이어지던 흐름이 오늘 바뀌었다면 그 전환을 가장 먼저 짚는다.
+- [어제 글]이 주어지면, 어제 해석에서 제시한 조건이나 확인 포인트가 오늘 어떻게 되었는지
+  첫 번째 이슈의 해석에 한 문장 이상 반영한다. 어제 글이 없으면 무시한다.
+
 반드시 아래 JSON 형식으로만 답한다. 다른 말은 붙이지 않는다.
 {"title": "...", "html": "...", "summary3": ["...", "...", "..."], "labels": ["..."]}
 
@@ -267,6 +274,55 @@ def load_snapshots(date_kst):
     return snaps, path.stem
 
 
+TREND_KEYS = ["S&P500", "NASDAQ", "DOW", "RUSSELL2000", "VIX", "US10Y", "US30Y",
+               "DXY", "USDKRW", "WTI", "GOLD", "SMH", "XLK", "XLF", "XLE", "BTC"]
+
+
+def load_recent_days(n: int = 6) -> list:
+    """최근 n개 거래일의 마지막 스냅샷만 뽑아 흐름 비교용으로 만든다."""
+    out = []
+    for f in sorted(Path("snapshots").glob("*.jsonl"))[-n:]:
+        lines = [l for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
+        if not lines:
+            continue
+        last = json.loads(lines[-1])
+        row = {}
+        for k, v in last.get("data", {}).items():
+            if k not in TREND_KEYS or v.get("last") is None:
+                continue
+            cell = {"last": v["last"]}
+            if v.get("chg_bp") is not None:
+                cell["bp"] = v["chg_bp"]
+            elif v.get("chg_pct") is not None:
+                cell["pct"] = v["chg_pct"]
+            row[k] = cell
+        if row:
+            out.append({"date": f.stem, "data": row})
+    print(f"[trend] 최근 {len(out)}개 거래일 확보")
+    return out
+
+
+def previous_post_text(limit: int = 1400) -> str:
+    """블로그의 직전 글을 가져와 텍스트로 만든다. 실패해도 빈 문자열."""
+    try:
+        token = blogger_token()
+        blog_id = os.environ["BLOG_ID"]
+        url = (f"https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts"
+               f"?maxResults=1&fetchBodies=true&fetchImages=false")
+        res = http_json(url, timeout=30, headers={"Authorization": f"Bearer {token}"})
+        items = res.get("items") or []
+        if not items:
+            return ""
+        post = items[0]
+        text = re.sub(r"(?is)<[^>]+>", " ", post.get("content", ""))
+        text = htmllib.unescape(re.sub(r"\s+", " ", text)).strip()
+        print(f"[prev] 직전 글 확보: {post.get('title', '')[:40]}")
+        return f"{post.get('title', '')}\n{text[:limit]}"
+    except Exception as exc:
+        print(f"[prev] 직전 글 없음: {type(exc).__name__}")
+        return ""
+
+
 def blogger_token():
     data = urllib.parse.urlencode({
         "client_id": os.environ["BLOGGER_CLIENT_ID"],
@@ -306,10 +362,13 @@ def main():
     market = now_kst.weekday() in (1, 2, 3, 4, 5) and len(snaps) >= 4
     print(f"[mode] {'시장리뷰' if market else '뉴스'} / 스냅샷 {len(snaps)}건 / 초안={DRAFT}")
 
-    headlines = news_mod.collect(snaps)
-    news_block = news_mod.as_text(headlines)
+    news_block = news_mod.as_prompt(news_mod.collect(snaps))
     if not news_block:
-        news_block = "(헤드라인을 가져오지 못했습니다. 원인을 추측하지 말고 확인되지 않았다고 쓰세요.)"
+        news_block = "(뉴스를 가져오지 못했습니다. 원인을 추측하지 말고 확인되지 않았다고 쓰세요.)"
+
+    trend = load_recent_days()
+    trend_block = json.dumps(trend, ensure_ascii=False) if trend else ""
+    prev = previous_post_text()
 
     ver, names = list_models(key)
     cands = rank(names)
@@ -319,13 +378,21 @@ def main():
                   f"[장중 스냅샷 {len(snaps)}건] ts_kst는 수집 시각(KST), "
                   f"chg_bp는 bp 단위 변동, prev_close는 직전 거래일 종가다. "
                   f"마지막 스냅샷이 사실상 종가다.\n"
-                  + json.dumps(snaps, ensure_ascii=False)
-                  + f"\n\n[뉴스 헤드라인] 지난 48시간 수집분이다. "
-                    f"원인은 반드시 이 목록에 근거해 쓴다.\n{news_block}")
+                  + json.dumps(snaps, ensure_ascii=False))
+        if trend_block:
+            prompt += ("\n\n[최근 거래일 추이] 각 날짜의 마지막 스냅샷이다. "
+                       "pct는 그날의 전일 대비 %, bp는 금리의 전일 대비 변동이다. "
+                       "며칠째 이어지는 흐름인지, 최근 누적으로 얼마나 움직였는지 본문에 반영하라.\n"
+                       + trend_block)
+        if prev:
+            prompt += f"\n\n[어제 글] 어제 발행한 글이다. 해석에서 짚은 조건이 오늘 어떻게 되었는지 확인하라.\n{prev}"
+        prompt += f"\n\n[뉴스] 지난 48시간 수집분이다. 원인은 반드시 여기에 근거해 쓴다.\n{news_block}"
         system, mode = MARKET_SYSTEM, "시장리뷰"
     else:
-        prompt = (f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다. 미국장 휴장 구간이다.\n\n"
-                  f"[뉴스 헤드라인] 지난 48시간 수집분이다. 이 목록에 있는 내용만 쓴다.\n{news_block}")
+        prompt = f"오늘은 {now_kst:%Y년 %m월 %d일} 한국시간 아침이다. 미국장 휴장 구간이다.\n"
+        if prev:
+            prompt += f"\n[어제 글]\n{prev}\n"
+        prompt += f"\n[뉴스] 지난 48시간 수집분이다. 여기 있는 내용만 쓴다.\n{news_block}"
         system, mode = NEWS_SYSTEM, "뉴스"
 
     report, used = try_generate(key, ver, cands, system, prompt)
