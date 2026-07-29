@@ -39,6 +39,19 @@ COMMON = """당신은 한국어 금융 블로그의 필자다.
         강세/약세, 매수세/매도세, 반발 매수, 실적 발표, 공급 과잉, 수요 둔화, 규제 리스크.
 - 전문용어는 처음 나올 때 괄호로 짧게 풀어준다.
 
+시간 규칙 — 정규장과 시간외를 절대 섞지 않는다:
+- 뉴스에는 [장중] [마감후] 표시가 붙어 있다. 코드가 정규장 마감 시각과 보도 시각을 대조해 붙인 값이다.
+- [마감후] 뉴스의 주가 반응은 시간외 거래(정규장이 끝난 뒤 이뤄지는 거래)이며, 오늘 종가에는
+  반영되지 않았다. 반드시 "시간외 거래에서", "다음 거래일에 반영될 전망" 같은 표현으로 구분한다.
+- 실적 발표는 대개 장 마감 후에 나온다. 마감 후 실적에 따른 급등락을 그날 종가 하락의 원인으로
+  적으면 사실관계 오류다. 이런 실수를 하지 않는다.
+- 제공된 스냅샷 데이터는 정규장 종료 시점까지만 담고 있다. 개별 종목 등락률은 데이터에 없으므로
+  기사에 적힌 수치만 인용하고, 그것이 정규장인지 시간외인지 반드시 밝힌다.
+
+소수점 규칙:
+- 등락률과 bp는 소수점 첫째 자리까지만 쓴다. (-1.5%, +13.5%, +1.8bp)
+- 지수 종가는 소수점 둘째 자리까지 쓴다.
+
 맥락 규칙 — 오늘 하루만 보지 않는다:
 - [최근 거래일 추이]가 주어지면 오늘의 움직임을 그 흐름 속에 놓고 설명한다.
   (예: "3거래일 연속 하락", "이번 주 누적 -3.2%", "지난주 고점 대비 되돌림")
@@ -58,7 +71,7 @@ summary3은 텔레그램용 3줄 요약이며 각 45자 내외."""
 
 STRUCT = """
 [1] 맨 위 주요 지표 <table>. 첫 행 머리글은 (지표 / 종가 / 전 거래일 대비).
-    주가지수는 %, 금리는 bp, 환율·유가·금은 % 로 표기.
+    주가지수는 %, 금리는 bp, 환율·유가·금은 % 로 표기하고 모두 소수점 첫째 자리까지만 쓴다.
 
 [2] <h2>시장을 움직인 3가지 요인</h2>
     <h3>1. [주식] 이슈 제목</h3>
@@ -128,7 +141,26 @@ def wrap_interpretation(html: str) -> str:
     return pat.sub(repl, html)
 
 
+MOVE_WORDS = ("상승", "하락", "급등", "급락", "폭등", "폭락", "오르", "내리",
+              "빠지", "반등", "되돌림", "약세", "강세")
+
+
+def round_metrics(html: str) -> str:
+    """등락률과 bp만 소수점 첫째 자리로 줄인다. 금리 레벨(4.622%)은 그대로 둔다."""
+    # 부호가 붙은 값은 무조건 등락이다
+    html = re.sub(r"([+\-]\d+\.\d{2,})\s*(%p|%|bp)",
+                  lambda m: f"{float(m.group(1)):+.1f}{m.group(2)}", html)
+
+    # 부호가 없으면 뒤에 오는 서술어로 등락인지 판단한다
+    verbs = "|".join(MOVE_WORDS)
+    html = re.sub(
+        rf"(?<![\d.+\-])(\d+\.\d{{2,}})\s*(%p|%|bp)(\s*(?:{verbs}))",
+        lambda m: f"{float(m.group(1)):.1f}{m.group(2)}{m.group(3)}", html)
+    return html
+
+
 def style_html(html: str) -> str:
+    html = round_metrics(html)
     html = wrap_interpretation(html)
 
     def color(m):
@@ -271,6 +303,8 @@ def load_snapshots(date_kst):
             if k in YIELD_KEYS and v.get("last") is not None and v.get("prev_close"):
                 v["chg_bp"] = round((v["last"] - v["prev_close"]) * 100, 1)
                 v.pop("chg_pct", None)
+            elif v.get("chg_pct") is not None:
+                v["chg_pct"] = round(v["chg_pct"], 1)
     return snaps, path.stem
 
 
@@ -362,7 +396,14 @@ def main():
     market = now_kst.weekday() in (1, 2, 3, 4, 5) and len(snaps) >= 4
     print(f"[mode] {'시장리뷰' if market else '뉴스'} / 스냅샷 {len(snaps)}건 / 초안={DRAFT}")
 
-    news_block = news_mod.as_prompt(news_mod.collect(snaps))
+    cutoff = None
+    if snaps:
+        try:
+            cutoff = dt.datetime.fromisoformat(snaps[-1]["ts_kst"]).astimezone(dt.timezone.utc)
+            print(f"[cutoff] 정규장 마감 기준 {cutoff:%Y-%m-%d %H:%M}Z 이후 = 마감후")
+        except Exception:
+            cutoff = None
+    news_block = news_mod.as_prompt(news_mod.collect(snaps), cutoff=cutoff)
     if not news_block:
         news_block = "(뉴스를 가져오지 못했습니다. 원인을 추측하지 말고 확인되지 않았다고 쓰세요.)"
 
