@@ -170,7 +170,16 @@ def collect(snaps: list, max_age_hours: int = 48, bodies: int = 6) -> dict:
     return {"items": fresh, "bodies": got}
 
 
-def as_prompt(res: dict, headline_limit: int = 40) -> str:
+def session_tag(when, cutoff) -> str:
+    """정규장 마감(cutoff) 이후 보도인지 코드로 판정한다."""
+    if when is None:
+        return "시각미확인"
+    if cutoff is None:
+        return "시각확인"
+    return "마감후" if when > cutoff else "장중"
+
+
+def as_prompt(res: dict, cutoff=None, headline_limit: int = 40) -> str:
     items = res.get("items", [])
     body_items = [i for i in items if i.get("body")]
     head_items = [i for i in items if not i.get("body")][:headline_limit]
@@ -180,11 +189,13 @@ def as_prompt(res: dict, headline_limit: int = 40) -> str:
         out.append("[기사 본문] 원인을 쓸 때 이 내용을 최우선 근거로 삼는다.")
         for i, it in enumerate(body_items, 1):
             when = f"{it['when']:%m-%d %H:%MZ}" if it["when"] else "?"
-            out.append(f"\n({i}) {it['title']}  [{it['source']} / {when}]\n{it['body']}")
+            tag = session_tag(it["when"], cutoff)
+            out.append(f"\n({i}) [{tag}] {it['title']}  [{it['source']} / {when}]\n{it['body']}")
     if head_items:
         out.append("\n[헤드라인] 본문은 없다. 제목에서 확인되는 사실만 근거로 쓴다.")
         for it in head_items:
             when = f"{it['when']:%m-%d %H:%M}Z" if it["when"] else "?"
             src = f" / {it['source']}" if it["source"] else ""
-            out.append(f"- [{when}{src}] {it['title']}")
+            tag = session_tag(it["when"], cutoff)
+            out.append(f"- [{tag}] [{when}{src}] {it['title']}")
     return "\n".join(out)
