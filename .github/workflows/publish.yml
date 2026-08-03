@@ -1,34 +1,107 @@
 name: publish-daily-report
 
+
+
 on:
+
   schedule:
+
     # UTC 22:10 = KST 07:10
+
     - cron: '10 22 * * *'
+
   workflow_dispatch:
+
     inputs:
+
       draft:
+
         description: '초안으로만 올리기'
+
         type: choice
+
         options: ['false', 'true']
+
         default: 'false'
 
+
+
+permissions:
+
+  contents: write
+
+
+
 jobs:
+
   publish:
+
     runs-on: ubuntu-latest
+
     steps:
+
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
+
         with:
+
           python-version: '3.11'
 
+
+
+      - run: pip install --quiet --upgrade matplotlib pandas yfinance curl_cffi
+
+
+
+      - name: 차트 생성
+
+        run: python scripts/charts.py
+
+        continue-on-error: true
+
+
+
+      - name: 차트 커밋
+
+        continue-on-error: true
+
+        run: |
+
+          git config user.name  "market-bot"
+
+          git config user.email "bot@users.noreply.github.com"
+
+          git add charts
+
+          git diff --staged --quiet && echo "변경 없음" && exit 0
+
+          git commit -m "chart $(date -u +%FT%H:%MZ)"
+
+          git pull --rebase --autostash
+
+          git push
+
+
+
       - name: 리포트 생성 및 발행
+
         run: python scripts/publish.py
+
         env:
+
           PUBLISH_DRAFT:         ${{ github.event.inputs.draft || 'false' }}
+
           GEMINI_API_KEY:        ${{ secrets.GEMINI_API_KEY }}
+
           BLOGGER_CLIENT_ID:     ${{ secrets.BLOGGER_CLIENT_ID }}
+
           BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
+
           BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
+
           BLOG_ID:               ${{ secrets.BLOG_ID }}
+
           TELEGRAM_BOT_TOKEN:    ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
           TELEGRAM_CHAT_ID:      ${{ secrets.TELEGRAM_CHAT_ID }}
