@@ -182,19 +182,46 @@ def add_thousands(html: str) -> str:
                   fix, html)
 
 
+KEYWORDS = (
+    # 통화정책
+    "연준", "FOMC", "금리 인하", "금리 인상", "매파", "비둘기", "기준금리", "양적긴축",
+    # 지표
+    "CPI", "PCE", "고용지표", "실업률", "GDP", "소비자물가", "인플레이션", "경기 침체",
+    # 실적·기업
+    "실적 발표", "가이던스", "어닝 서프라이즈", "어닝 쇼크", "설비투자", "감원",
+    # 정책·지정학
+    "관세", "수출 규제", "지정학", "제재", "감산", "증산",
+    # 시장 구조
+    "안전자산 선호", "위험자산 선호", "순환매", "차익실현", "시간외 거래",
+    "커브 스티프닝", "커브 플래트닝", "변동성 확대",
+)
+KEY_PAT = re.compile("(" + "|".join(
+    re.escape(w) for w in sorted(KEYWORDS, key=len, reverse=True)) + ")")
+
+
 def highlight_keywords(html: str) -> str:
-    """본문 문단의 핵심 키워드를 빨간 굵은 글씨로 강조한다."""
-    words = ("연준", "FOMC", "금리 인하", "금리 인상", "매파", "비둘기", "CPI", "PCE",
-             "고용지표", "실적 발표", "가이던스", "감산", "증산", "관세", "수출 규제",
-             "안전자산 선호", "위험자산 선호", "순환매", "차익실현", "시간외 거래",
-             "커브 스티프닝", "커브 플래트닝", "경기 침체", "인플레이션")
-    pat = re.compile("(" + "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)) + ")")
+    """핵심 이슈 문단의 주요 키워드만 빨간 굵은 글씨로 강조한다.
+
+    - 표 안, 이미 강조된 문단은 건드리지 않는다
+    - 문단당 1개, 글 전체 8개까지만 칠해 시선이 분산되지 않게 한다
+    - 같은 키워드는 처음 나올 때 한 번만 칠한다
+    """
+    used, budget = set(), [8]
 
     def per_block(m):
         tag, inner = m.group(1), m.group(2)
-        if "<span" in inner:
+        if budget[0] <= 0 or "<span" in inner or "<td" in inner:
             return m.group(0)
-        return f"<{tag}>" + pat.sub(lambda x: f'<span {KEY}>{x.group(1)}</span>', inner, count=2) + f"</{tag}>"
+
+        def one(x):
+            w = x.group(1)
+            if w in used or budget[0] <= 0:
+                return w
+            used.add(w)
+            budget[0] -= 1
+            return f'<span {KEY}>{w}</span>'
+
+        return f"<{tag}>" + KEY_PAT.sub(one, inner, count=1) + f"</{tag}>"
 
     return re.sub(r"(?is)<(li|p)>(.*?)</\1>", per_block, html)
 
@@ -236,15 +263,33 @@ def style_html(html: str) -> str:
     return html
 
 
-def overview_chart(now_kst) -> str:
-    """3분할 차트를 '시장을 움직인 3가지 요인' 앞에 넣을 HTML로 만든다."""
+def insert_section_charts(html: str, now_kst) -> str:
+    """[주식] 이슈 아래에 주가 차트, [채권] 이슈 아래에 금리 차트를 넣는다."""
     repo = os.environ.get("GITHUB_REPOSITORY", "")
-    f = Path("charts") / f"{now_kst:%Y-%m-%d}-overview.png"
-    if not repo or not f.exists():
-        return ""
-    url = f"https://raw.githubusercontent.com/{repo}/main/charts/{f.name}"
-    return (f'<img src="{url}" {IMG}>'
-            f'<p {CAP}>최근 3년 추이 · 회색 음영은 최근 1개월 구간</p>')
+    if not repo:
+        return html
+
+    def img(kind: str) -> str:
+        f = Path("charts") / f"{now_kst:%Y-%m-%d}-{kind}.png"
+        if not f.exists():
+            print(f"[chart] 없음: {f.name}")
+            return ""
+        url = f"https://raw.githubusercontent.com/{repo}/main/charts/{f.name}"
+        return (f'<img src="{url}" {IMG}>'
+                f'<p {CAP}>최근 3년 추이 · 회색 음영은 최근 1개월</p>')
+
+    parts = re.split(r"(?i)(<h3[^>]*>)", html)
+    for i, part in enumerate(parts):
+        if not part.lower().startswith("<h3") or i + 1 >= len(parts):
+            continue
+        body = parts[i + 1]
+        kind = "equity" if "[주식]" in body else "bond" if "[채권]" in body else ""
+        tag = img(kind) if kind else ""
+        if not tag:
+            continue
+        pos = body.find(HR)          # 해석 박스 뒤 구분선 = 이슈 블록의 끝
+        parts[i + 1] = body[:pos] + tag + body[pos:] if pos != -1 else body + tag
+    return "".join(parts)
 
 
 def basis_note(snaps: list) -> str:
@@ -506,10 +551,7 @@ def main():
     if market:
         note = basis_note(snaps)
         body = body.replace("</table>", "</table>" + note, 1) if "</table>" in body else note + body
-        chart = overview_chart(now_kst)
-        if chart:
-            i = body.find("<h2")
-            body = (body[:i] + chart + body[i:]) if i != -1 else body + chart
+        body = insert_section_charts(body, now_kst)
 
     raw_tags = (report.get("labels") or []) + BASE_TAGS
     seen, tags_list = set(), []
@@ -528,7 +570,7 @@ def main():
     prefix = "[초안] " if DRAFT else ""
     send_telegram(f"{prefix}<b>{htmllib.escape(title)}</b>\n\n"
                   + "\n".join(f"▸ {htmllib.escape(s)}" for s in report["summary3"])
-                  + f"\n\n{url}\n\n{htmllib.escape(tags)}")
+                  + f"\n\n{url}")
     print("[telegram] 전송 완료")
 
 
