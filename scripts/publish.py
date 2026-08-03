@@ -121,13 +121,18 @@ TD_NAME = 'style="padding:9px 10px;border-bottom:1px solid #e5e7eb;font-weight:7
 TD_NUM = 'style="padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:right;font-variant-numeric:tabular-nums;"'
 H2 = 'style="font-size:20px;font-weight:700;margin:36px 0 14px;padding-bottom:8px;border-bottom:2px solid #334155;"'
 H3 = 'style="font-size:17px;font-weight:700;margin:28px 0 12px;padding:8px 0 8px 12px;border-left:4px solid #2563eb;background:#f8fafc;"'
-PP = 'style="line-height:1.8;margin:10px 0;"'
-UL = 'style="line-height:1.85;margin:8px 0 18px;padding-left:24px;"'
+PP = 'style="line-height:1.9;margin:10px 0;"'
+UL = 'style="line-height:1.9;margin:8px 0 18px;padding-left:24px;"'
 LI = 'style="margin:7px 0;"'
 NOTE = 'style="font-size:13px;color:#64748b;margin:2px 0 20px;"'
 LABEL = 'style="font-weight:700;color:#0f172a;border-bottom:2px solid #fcd34d;padding-bottom:1px;"'
 BOX = 'style="background:#fffbeb;border-left:4px solid #f59e0b;padding:14px 18px;margin:14px 0 22px;border-radius:6px;"'
-TAGS = 'style="margin:30px 0 0;font-size:14px;color:#2563eb;line-height:1.9;"'
+TAGS = 'style="margin:34px 0 0;font-size:13px;color:#9ca3af;line-height:1.9;"'
+WRAP = 'style="line-height:1.9;"'
+IMG = 'style="width:100%;height:auto;margin:10px 0 4px;border:1px solid #e5e7eb;border-radius:8px;"'
+CAP = 'style="font-size:13px;color:#6b7280;text-align:center;margin:0 0 24px;"'
+HR = '<hr style=""border:0;border-top:1px solid #e5e7eb;margin:30px 0 6px;">'
+KEY = 'style="color:#c0392b;font-weight:700;"'
 
 
 def wrap_interpretation(html: str) -> str:
@@ -136,7 +141,7 @@ def wrap_interpretation(html: str) -> str:
     )
 
     def repl(m):
-        return f'<div {BOX}><p><span {LABEL}>해석</span></p>{m.group(2)}</div>'
+        return f'<div {BOX}><p><span {LABEL}>해석</span></p>{m.group(2)}</div>{HR}'
 
     return pat.sub(repl, html)
 
@@ -159,8 +164,45 @@ def round_metrics(html: str) -> str:
     return html
 
 
+def add_thousands(html: str) -> str:
+    """표 셀의 4자리 이상 숫자에 천단위 쉼표를 넣는다. 이미 있으면 건드리지 않는다."""
+    def fix(m):
+        head, num, tail = m.group(1), m.group(2), m.group(3)
+        if "," in num:
+            return m.group(0)
+        parts = num.split(".")
+        try:
+            whole = f"{int(parts[0]):,}"
+        except ValueError:
+            return m.group(0)
+        body = whole + ("." + parts[1] if len(parts) > 1 else "")
+        return f"{head}{body}{tail}"
+
+    return re.sub(r"(?is)(<td[^>]*>\s*)(\d{4,}(?:\.\d+)?)(\s*(?:원|%|\$)?\s*</td>)",
+                  fix, html)
+
+
+def highlight_keywords(html: str) -> str:
+    """본문 문단의 핵심 키워드를 빨간 굵은 글씨로 강조한다."""
+    words = ("연준", "FOMC", "금리 인하", "금리 인상", "매파", "비둘기", "CPI", "PCE",
+             "고용지표", "실적 발표", "가이던스", "감산", "증산", "관세", "수출 규제",
+             "안전자산 선호", "위험자산 선호", "순환매", "차익실현", "시간외 거래",
+             "커브 스티프닝", "커브 플래트닝", "경기 침체", "인플레이션")
+    pat = re.compile("(" + "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)) + ")")
+
+    def per_block(m):
+        tag, inner = m.group(1), m.group(2)
+        if "<span" in inner:
+            return m.group(0)
+        return f"<{tag}>" + pat.sub(lambda x: f'<span {KEY}>{x.group(1)}</span>', inner, count=2) + f"</{tag}>"
+
+    return re.sub(r"(?is)<(li|p)>(.*?)</\1>", per_block, html)
+
+
 def style_html(html: str) -> str:
     html = round_metrics(html)
+    html = add_thousands(html)
+    html = highlight_keywords(html)
     html = wrap_interpretation(html)
 
     def color(m):
@@ -192,6 +234,17 @@ def style_html(html: str) -> str:
     html = re.sub(r"(?i)<ul[^>]*>", f"<ul {UL}>", html)
     html = re.sub(r"(?i)<li[^>]*>", f"<li {LI}>", html)
     return html
+
+
+def overview_chart(now_kst) -> str:
+    """3분할 차트를 '시장을 움직인 3가지 요인' 앞에 넣을 HTML로 만든다."""
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    f = Path("charts") / f"{now_kst:%Y-%m-%d}-overview.png"
+    if not repo or not f.exists():
+        return ""
+    url = f"https://raw.githubusercontent.com/{repo}/main/charts/{f.name}"
+    return (f'<img src="{url}" {IMG}>'
+            f'<p {CAP}>최근 3년 추이 · 회색 음영은 최근 1개월 구간</p>')
 
 
 def basis_note(snaps: list) -> str:
@@ -307,6 +360,13 @@ def load_snapshots(date_kst):
                 v["chg_pct"] = round(v["chg_pct"], 1)
     return snaps, path.stem
 
+
+BASE_TAGS = [
+    "미국증시", "뉴욕증시", "해외주식", "미국주식", "S&P500", "나스닥", "다우존스",
+    "국채금리", "미국채", "채권시장", "환율", "원달러환율", "달러인덱스", "국제유가",
+    "WTI", "금시세", "비트코인", "연준", "FOMC", "기준금리", "인플레이션", "경제지표",
+    "반도체", "빅테크", "증시전망", "시황", "재테크", "자산배분", "투자공부", "시장동향",
+]
 
 TREND_KEYS = ["S&P500", "NASDAQ", "DOW", "RUSSELL2000", "VIX", "US10Y", "US30Y",
                "DXY", "USDKRW", "WTI", "GOLD", "SMH", "XLK", "XLF", "XLE", "BTC"]
@@ -446,13 +506,23 @@ def main():
     if market:
         note = basis_note(snaps)
         body = body.replace("</table>", "</table>" + note, 1) if "</table>" in body else note + body
+        chart = overview_chart(now_kst)
+        if chart:
+            i = body.find("<h2")
+            body = (body[:i] + chart + body[i:]) if i != -1 else body + chart
 
-    labels = (report.get("labels") or []) + [mode]
-    tags = " ".join("#" + re.sub(r"[\s#]+", "", t) for t in labels if t.strip())
-    body += f'<p {TAGS}>{tags}</p>'
+    raw_tags = (report.get("labels") or []) + BASE_TAGS
+    seen, tags_list = set(), []
+    for t in raw_tags:
+        t = re.sub(r"[\s#]+", "", str(t))
+        if t and t not in seen:
+            seen.add(t)
+            tags_list.append("#" + t)
+    tags = " ".join(tags_list[:30])
+    body = f'<div {WRAP}>{body}</div>' + f'<p {TAGS}>{tags}</p>'
 
-    title = f"{now_kst:%y%m%d}_{report['title']}"
-    url = post_to_blogger(title, body, labels)
+    title = f"{now_kst:%y%m%d}_[시장동향]_{report['title']}"
+    url = post_to_blogger(title, body, ["시장동향"])
     print(f"[blogger] {url}")
 
     prefix = "[초안] " if DRAFT else ""
