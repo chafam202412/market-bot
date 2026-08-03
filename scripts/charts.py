@@ -1,128 +1,135 @@
-"""스냅샷으로 차트 PNG를 만든다. 한글 폰트 문제를 피하려고 라벨은 영문."""
+"""3년치 주가·환율·금리 차트를 한 줄(3분할)로 그린다. 최근 1개월은 회색 음영."""
 import datetime as dt
-import json
-import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import pandas as pd
+import yfinance as yf
 
-KST = dt.timezone(dt.timedelta(hours=9))
 OUT = Path("charts")
+YEARS = 3
+SHADE_DAYS = 30
 
-INDICES = [("S&P500", "S&P 500", "#2563eb"),
-           ("NASDAQ", "Nasdaq", "#dc2626"),
-           ("DOW", "Dow", "#16a34a")]
+C1, C2 = "#2563eb", "#dc2626"      # 좌축 / 우축
+C3 = "#0f766e"                      # 단일축
+GRID, TICK, SHADE = "#eeeeee", "#555555", "#e2e8f0"
 
-SECTORS = [("SMH", "Semis"), ("XLK", "Tech"), ("XLF", "Financials"),
-           ("XLE", "Energy"), ("RUSSELL2000", "Small cap")]
+PANELS = [
+    {"title": "Equity indices (3Y)",
+     "left": ("^GSPC", "S&P 500", C1),
+     "right": ("^IXIC", "Nasdaq", C2)},
+    {"title": "FX (3Y)",
+     "left": ("DX-Y.NYB", "Dollar index", C1),
+     "right": ("KRW=X", "USD/KRW", C2)},
+    {"title": "US 10Y Treasury yield (3Y)",
+     "left": ("^TNX", "10Y yield (%)", C3),
+     "right": None},
+]
 
-PLUS, MINUS = "#d32f2f", "#1565c0"
+
+def download(tickers: list[str]) -> pd.DataFrame:
+    df = yf.download(tickers, period=f"{YEARS}y", interval="1d",
+                     progress=False, auto_adjust=False, threads=False)
+    if df.empty:
+        return pd.DataFrame()
+    close = df["Close"]
+    return close.to_frame() if isinstance(close, pd.Series) else close
 
 
-def style_axes(ax):
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+def series(close: pd.DataFrame, ticker: str) -> pd.Series | None:
+    if ticker not in getattr(close, "columns", []):
+        try:
+            s = yf.Ticker(ticker).history(period=f"{YEARS}y")["Close"]
+        except Exception:
+            return None
+    else:
+        s = close[ticker]
+    s = s.dropna()
+    if len(s) < 30:
+        return None
+    if getattr(s.index, "tz", None) is not None:
+        s.index = s.index.tz_localize(None)
+    return s
+
+
+def style(ax):
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
     ax.spines["left"].set_color("#cccccc")
     ax.spines["bottom"].set_color("#cccccc")
-    ax.tick_params(colors="#555555", labelsize=9)
-    ax.grid(axis="y", color="#eeeeee", linewidth=0.8)
+    ax.tick_params(colors=TICK, labelsize=8)
+    ax.grid(axis="y", color=GRID, linewidth=0.7)
     ax.set_axisbelow(True)
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
 
 
-def intraday(snaps, path: Path) -> bool:
-    if len(snaps) < 3:
-        print("[chart] 스냅샷 3건 미만 - 장중 차트 생략")
-        return False
+def draw(path: Path) -> bool:
+    tickers = []
+    for p in PANELS:
+        tickers.append(p["left"][0])
+        if p["right"]:
+            tickers.append(p["right"][0])
+    close = download(tickers)
 
-    times = [dt.datetime.fromisoformat(s["ts_kst"]) for s in snaps]
-    fig, ax = plt.subplots(figsize=(8, 4.2), dpi=150)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2), dpi=140)
+    drawn = 0
 
-    drawn = False
-    for key, label, color in INDICES:
-        ys = []
-        for s in snaps:
-            d = s["data"].get(key, {})
-            ys.append(d.get("chg_pct"))
-        if all(y is None for y in ys):
+    for ax, panel in zip(axes, PANELS):
+        tk, label, color = panel["left"]
+        s = series(close, tk)
+        if s is None:
+            ax.set_visible(False)
             continue
-        xs = [t for t, y in zip(times, ys) if y is not None]
-        vs = [y for y in ys if y is not None]
-        ax.plot(xs, vs, marker="o", markersize=3, linewidth=2, label=label, color=color)
-        ax.annotate(f"{vs[-1]:+.2f}%", (xs[-1], vs[-1]), textcoords="offset points",
-                    xytext=(6, 0), fontsize=9, color=color, va="center")
-        drawn = True
+
+        ax.plot(s.index, s.values, linewidth=1.6, color=color, label=label)
+        ax.set_ylabel(label, fontsize=9, color=color)
+        ax.tick_params(axis="y", labelcolor=color)
+        style(ax)
+
+        # 최근 1개월 음영
+        end = s.index.max()
+        ax.axvspan(end - pd.Timedelta(days=SHADE_DAYS), end,
+                   color=SHADE, alpha=0.75, zorder=0)
+
+        handles = [ax.lines[-1]]
+        if panel["right"]:
+            tk2, label2, color2 = panel["right"]
+            s2 = series(close, tk2)
+            if s2 is not None:
+                ax2 = ax.twinx()
+                ax2.plot(s2.index, s2.values, linewidth=1.6, color=color2, label=label2)
+                ax2.set_ylabel(label2, fontsize=9, color=color2)
+                ax2.tick_params(axis="y", labelcolor=color2, labelsize=8)
+                for side in ("top", "left"):
+                    ax2.spines[side].set_visible(False)
+                ax2.spines["right"].set_color("#cccccc")
+                handles.append(ax2.lines[-1])
+
+        ax.set_title(panel["title"], fontsize=11, pad=10)
+        ax.legend(handles, [h.get_label() for h in handles],
+                  frameon=False, fontsize=8, loc="upper left")
+        drawn += 1
 
     if not drawn:
         plt.close(fig)
+        print("[chart] 데이터를 받지 못해 차트를 만들지 않았습니다")
         return False
 
-    ax.axhline(0, color="#999999", linewidth=1, linestyle="--")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax.set_ylabel("Change from prev close (%)", fontsize=9, color="#555555")
-    ax.set_title("US indices during the session (KST)", fontsize=12, pad=12)
-    ax.legend(frameon=False, fontsize=9, loc="best")
-    style_axes(ax)
     fig.tight_layout()
+    OUT.mkdir(exist_ok=True)
     fig.savefig(path, facecolor="white")
     plt.close(fig)
-    print(f"[chart] {path}")
-    return True
-
-
-def sectors(snaps, path: Path) -> bool:
-    last = snaps[-1]["data"]
-    items = []
-    for key, label in SECTORS:
-        v = last.get(key, {}).get("chg_pct")
-        if v is not None:
-            items.append((label, v))
-    if not items:
-        return False
-
-    items.sort(key=lambda x: x[1])
-    labels = [i[0] for i in items]
-    vals = [i[1] for i in items]
-    colors = [PLUS if v >= 0 else MINUS for v in vals]
-
-    fig, ax = plt.subplots(figsize=(8, 3.6), dpi=150)
-    bars = ax.barh(labels, vals, color=colors, height=0.6)
-    for bar, v in zip(bars, vals):
-        off = 0.06 if v >= 0 else -0.06
-        ax.text(v + off, bar.get_y() + bar.get_height() / 2, f"{v:+.2f}%",
-                va="center", ha="left" if v >= 0 else "right",
-                fontsize=9, color=PLUS if v >= 0 else MINUS)
-
-    ax.axvline(0, color="#999999", linewidth=1)
-    ax.set_title("Sector performance", fontsize=12, pad=12)
-    lim = max(abs(min(vals)), abs(max(vals))) * 1.35 + 0.1
-    ax.set_xlim(-lim, lim)
-    ax.set_xticks([])
-    style_axes(ax)
-    ax.grid(False)
-    fig.tight_layout()
-    fig.savefig(path, facecolor="white")
-    plt.close(fig)
-    print(f"[chart] {path}")
+    print(f"[chart] {path} ({drawn}/3 패널)")
     return True
 
 
 def main():
-    files = sorted(Path("snapshots").glob("*.jsonl"))
-    if not files:
-        print("스냅샷 없음")
-        return
-    src = files[-1]
-    snaps = [json.loads(l) for l in src.read_text(encoding="utf-8").splitlines() if l.strip()]
-    if not snaps:
-        return
-
-    OUT.mkdir(exist_ok=True)
-    stem = src.stem
-    intraday(snaps, OUT / f"{stem}-intraday.png")
-    sectors(snaps, OUT / f"{stem}-sector.png")
+    today = dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).date()
+    draw(OUT / f"{today:%Y-%m-%d}-overview.png")
 
 
 if __name__ == "__main__":
