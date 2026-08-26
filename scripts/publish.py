@@ -32,6 +32,8 @@ COMMON = """당신은 한국어 금융 블로그의 필자다.
 표기 규칙:
 - 주어진 숫자 밖의 수치를 절대 만들어내지 않는다.
 - 수치를 처음 제시할 때 기준을 밝힌다. (예: "직전 거래일 종가 대비")
+- 단, 표 아래에 들어가는 "※ 위 수치는 ... 수집 시점 기준이며 ..." 형태의 안내 문구는 절대 쓰지 않는다.
+  이 문구는 발행 직전에 코드가 자동으로 삽입하므로, 본문에 쓰면 같은 문장이 두 번 나온다.
 - 금리는 반드시 bp(베이시스포인트)로 표기하고 %로 쓰지 않는다.
 - 국내 금융시장에서 실제로 쓰는 표준 용어만 사용한다. 사전에 없는 조어나 어색한 한자 조합을
   절대 만들지 않는다. 애매하면 쉬운 우리말로 풀어 쓴다.
@@ -292,6 +294,15 @@ def insert_section_charts(html: str, now_kst) -> str:
     return "".join(parts)
 
 
+def strip_basis_note(html: str) -> str:
+    """모델이 기준 시점 안내 문구를 직접 써넣었으면 지운다. 코드가 따로 넣기 때문."""
+    pat = re.compile(r"(?is)<p[^>]*>\s*※[^<]{0,120}?(?:수집\s*시점|시점\s*기준|종가\s*대비)[^<]{0,120}?</p>")
+    cleaned, n = pat.subn("", html)
+    if n:
+        print(f"[clean] 본문에 중복된 기준시점 문구 {n}건 제거")
+    return cleaned
+
+
 def basis_note(snaps: list) -> str:
     if not snaps:
         return ""
@@ -549,6 +560,7 @@ def main():
     print(f"[model] {used} / [mode] {mode}")
     body = style_html(report["html"])
     if market:
+        body = strip_basis_note(body)
         note = basis_note(snaps)
         body = body.replace("</table>", "</table>" + note, 1) if "</table>" in body else note + body
         body = insert_section_charts(body, now_kst)
